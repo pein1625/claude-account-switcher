@@ -49,16 +49,37 @@ case ":$PATH:" in
 esac
 
 if [ -f "$RC" ] && grep -qF "$MARK_BEGIN" "$RC"; then
-  echo "skipped shell snippet already present in $RC"
+  tmp=$(mktemp "$RC.XXXXXX")
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '$0==b{skip=1} !skip{print} $0==e{skip=0}' "$RC" > "$tmp" && mv "$tmp" "$RC"
+  verb="updated"
 else
-  cat >> "$RC" <<'RC_EOF'
+  verb="added  "
+fi
+cat >> "$RC" <<'RC_EOF'
 
 # >>> claude-account >>>
+# claude-as [account] [claude args...]
+#   Start claude (optionally after switching to <account>). When the statusline flags the 5h
+#   quota (accounts/.hop), the next exit switches to the flagged account and resumes the
+#   conversation with --continue. CLAUDE_ACCOUNT_AUTOHOP=1 makes that exit automatic.
 claude-as() {
-  [ -n "$1" ] || { echo "usage: claude-as <account> [claude args...]" >&2; return 1; }
-  claude-account use "$1" || return $?
-  shift
-  claude "$@"
+  local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" next rc
+  if [ -n "${1:-}" ] && [ -f "$dir/$1.json" ]; then
+    claude-account use "$1" || return $?
+    shift
+  fi
+  case " $* " in
+    *" -p "*|*" --print "*) CLAUDE_AS_LOOP=1 command claude "$@"; return $? ;;
+  esac
+  while :; do
+    CLAUDE_AS_LOOP=1 command claude "$@"
+    rc=$?
+    [ -s "$dir/.hop" ] || return $rc
+    next=$(cat "$dir/.hop"); rm -f "$dir/.hop"
+    claude-account use "$next" || return $?
+    printf 'claude-as: resuming as %s\n' "$next"
+    set -- --continue
+  done
 }
 if [ -n "${ZSH_VERSION:-}" ]; then
   if (( $+functions[compdef] )); then
@@ -71,8 +92,7 @@ elif [ -n "${BASH_VERSION:-}" ]; then
 fi
 # <<< claude-account <<<
 RC_EOF
-  echo "added   claude-as() + completion to $RC  (run: source $RC)"
-fi
+echo "$verb claude-as() + completion in $RC  (run: source $RC)"
 
 echo
 "$HERE/claude-account.sh" doctor || true

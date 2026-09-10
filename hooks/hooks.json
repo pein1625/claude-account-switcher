@@ -1,8 +1,14 @@
 {
-  "description": "Reminds once per session to run the one-time CLI install; silent once ~/.local/bin/claude-account exists.",
+  "description": "Install hint until the CLI shim exists; hop hint while accounts/.hop is set; opt-in auto-hop (CLAUDE_ACCOUNT_AUTOHOP=1 inside claude-as) ends the process at the turn boundary so claude-as relaunches on the next account.",
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-hint.sh\"", "timeout": 5 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hop-hint.sh\"", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/autohop-stop.sh\"", "timeout": 10 } ] }
     ]
   }
 }

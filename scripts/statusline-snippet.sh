@@ -1,22 +1,29 @@
-# Drop-in for a Claude Code statusline script: sets $ACCT to the live account's
-# claude-account name (when the snapshot marker matches) or the email local-part.
+# Drop-in for a Claude Code statusline script. Needs: FIVE = .rate_limits.five_hour.used_percentage,
+# FIVE_AT = .rate_limits.five_hour.resets_at (both may be empty), and OUT = the line being built.
+#
+# 1. $ACCT = the live account's claude-account name (falls back to the email local-part).
 ACCT=$(jq -r '.oauthAccount.emailAddress // empty' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" 2>/dev/null)
 ACCT="${ACCT%%@*}"
-ACCT_MARKER="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}/.current"
-if [ -f "$ACCT_MARKER" ]; then
-  IFS=$'\t' read -r ACCT_NAME ACCT_UUID < "$ACCT_MARKER"
+ACCT_DIR="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}"
+if [ -f "$ACCT_DIR/.current" ]; then
+  IFS=$'\t' read -r ACCT_NAME ACCT_UUID < "$ACCT_DIR/.current"
   LIVE_UUID=$(jq -r '.oauthAccount.accountUuid // empty' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" 2>/dev/null)
   [ -n "$ACCT_UUID" ] && [ "$ACCT_UUID" = "$LIVE_UUID" ] && ACCT="$ACCT_NAME"
 fi
-# Then append to your output line, e.g.:  OUT="$OUT${ACCT:+ @$ACCT}"
+OUT="$OUT${ACCT:+ @$ACCT}"
 
-# Optional: when the 5-hour quota is (almost) gone, point at the next saved account.
-# FIVE = .rate_limits.five_hour.used_percentage from the statusline JSON input.
-if [ -n "${FIVE:-}" ] && [ "$FIVE" -ge 95 ] 2>/dev/null; then
-  NEXT=$(for f in "${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}"/*.json; do
-    case "$f" in *.credentials.json) continue ;; esac
-    [ -f "$f" ] || continue
-    n=$(basename "$f" .json); [ "$n" != "$ACCT" ] && { printf '%s' "$n"; break; }
-  done)
-  OUT="$OUT  5h quota gone -> /exit; claude-as ${NEXT:-<account>} --continue"
+# 2. Record the 5h reading; at the hop threshold (default 90%) `quota` writes accounts/.hop and prints
+#    the next account. The hint changes with how the session was started.
+HOP_NEXT=""
+if [ -n "${FIVE:-}" ] && command -v claude-account >/dev/null 2>&1; then
+  HOP_NEXT=$(claude-account quota "$FIVE" "${FIVE_AT:-0}" 2>/dev/null)
+fi
+if [ -n "$HOP_NEXT" ]; then
+  if [ "${CLAUDE_AS_LOOP:-}" = 1 ] && [ "${CLAUDE_ACCOUNT_AUTOHOP:-}" = 1 ]; then
+    OUT="$OUT  5h ${FIVE}% -> auto hop to $HOP_NEXT after this turn"
+  elif [ "${CLAUDE_AS_LOOP:-}" = 1 ]; then
+    OUT="$OUT  5h ${FIVE}% -> /exit hops to $HOP_NEXT"
+  else
+    OUT="$OUT  5h ${FIVE}% -> /exit; claude-as $HOP_NEXT --continue"
+  fi
 fi

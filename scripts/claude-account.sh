@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 LIVE_SERVICE="${CLAUDE_ACCOUNT_LIVE_SERVICE:-Claude Code-credentials}"
 STORE_PREFIX="Claude Code-credentials-acct-"
 ACCOUNTS_DIR="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}"
@@ -16,6 +16,8 @@ else
 fi
 LINUX_CRED_FILE="$CONFIG_DIR/.credentials.json"
 CURRENT_MARKER="$ACCOUNTS_DIR/.current"
+HOP_FILE="$ACCOUNTS_DIR/.hop"
+HOP_AT="${CLAUDE_ACCOUNT_HOP_AT:-90}"
 
 usage() {
   cat <<EOF
@@ -33,12 +35,20 @@ Usage:
   claude-account remove <name>      delete a saved snapshot (live login untouched)
   claude-account rename <old> <new> rename a saved snapshot (tokens and profile move; live login untouched)
   claude-account names              bare names, for shell completion
+  claude-account next               name of the best account to hop to (lowest recorded 5h usage,
+                                    reset windows count as 0); exit 1 when every other account is exhausted
+  claude-account quota <pct> [resets_at]
+                                    statusline entry point: record the live account's 5h usage; at or above
+                                    the hop threshold write the next account's name to accounts/.hop and print it
   claude-account doctor             check dependencies and storage
 
 Environment:
   CLAUDE_ACCOUNT_DIR                where snapshots live (default ~/.claude/accounts)
   CLAUDE_ACCOUNT_LIVE_SERVICE       macOS Keychain service Claude Code writes to
                                     (default "Claude Code-credentials"; required when CLAUDE_CONFIG_DIR is set)
+  CLAUDE_ACCOUNT_HOP_AT             5h usage percent that flags a hop (default 90)
+  CLAUDE_ACCOUNT_AUTOHOP            1 = inside claude-as, restart on the next account automatically at the end
+                                    of the turn that crossed the threshold (default: only hint; /exit hops)
 EOF
 }
 
@@ -66,6 +76,21 @@ keychain_delete() { security delete-generic-password -s "$1" >/dev/null 2>&1 || 
 
 saved_blob_file() { printf '%s/%s.credentials.json' "$ACCOUNTS_DIR" "$1"; }
 profile_file()    { printf '%s/%s.json' "$ACCOUNTS_DIR" "$1"; }
+quota_file()      { printf '%s/%s.quota' "$ACCOUNTS_DIR" "$1"; }
+
+current_name() { name_for_uuid "$(json_get "$(live_profile)" '.accountUuid // empty' 2>/dev/null)"; }
+
+# Effective 5h usage of a saved account from its last recorded statusline reading:
+# no record or a reset window that already passed -> 0.
+quota_score() {
+  local f pct resets now
+  f=$(quota_file "$1")
+  [ -f "$f" ] || { printf '0'; return; }
+  IFS=$'\t' read -r pct resets _ < "$f"
+  now=$(date +%s)
+  if [ -n "$resets" ] && [ "$resets" -gt 0 ] 2>/dev/null && [ "$now" -ge "$resets" ]; then printf '0'; return; fi
+  printf '%s' "${pct:-0}"
+}
 
 read_live_blob() {
   case "$OS" in
@@ -296,6 +321,7 @@ cmd_use() {
   fi
 
   warn_if_refresh_expired "$target_blob" "$name"
+  rm -f "$HOP_FILE"
   write_live_blob "$target_blob"
   patch_config_profile "$target_profile"
   set_current_marker "$name" "$(json_get "$target_profile" '.accountUuid // empty')"
@@ -309,9 +335,9 @@ cmd_use() {
 }
 
 cmd_list() {
-  local live f name email org sub saved uuid mark found=0
+  local live f name email org sub saved uuid mark q found=0
   live=$(json_get "$(live_profile)" '.accountUuid // empty' 2>/dev/null || true)
-  printf '%-1s %-14s %-32s %-22s %-8s %s\n' '' NAME EMAIL ORG PLAN SAVED
+  printf '%-1s %-14s %-32s %-22s %-8s %-6s %s\n' '' NAME EMAIL ORG PLAN 5H SAVED
   for f in $(each_profile_file); do
     found=1
     IFS=$'\t' read -r name email org sub saved uuid <<<"$(jq -r '[
@@ -319,7 +345,8 @@ cmd_list() {
       (.subscriptionType // "-"), (.saved_at // "-"), (.oauthAccount.accountUuid // "-")
     ] | @tsv' "$f")"
     mark=" "; [ -n "$live" ] && [ "$uuid" = "$live" ] && mark="*"
-    printf '%-1s %-14s %-32s %-22s %-8s %s\n' "$mark" "$name" "$email" "$org" "$sub" "${saved%%T*}"
+    q="-"; [ -f "$(quota_file "$name")" ] && q="$(quota_score "$name")%"
+    printf '%-1s %-14s %-32s %-22s %-8s %-6s %s\n' "$mark" "$name" "$email" "$org" "$sub" "$q" "${saved%%T*}"
   done
   [ "$found" -eq 1 ] || printf '(none saved yet - run: claude-account save <name>)\n'
 }
@@ -338,7 +365,7 @@ cmd_remove() {
   validate_name "${1:-}"
   [ -f "$(profile_file "$1")" ] || die "no saved account '$1'"
   delete_saved_blob "$1"
-  rm -f "$(profile_file "$1")"
+  rm -f "$(profile_file "$1")" "$(quota_file "$1")"
   if [ -f "$CURRENT_MARKER" ] && [ "$(cut -f1 "$CURRENT_MARKER")" = "$1" ]; then
     rm -f "$CURRENT_MARKER"
   fi
@@ -360,6 +387,7 @@ cmd_rename() {
   ( umask 077; printf '%s\n' "$profile" > "$(profile_file "$new")" )
   delete_saved_blob "$old"
   rm -f "$(profile_file "$old")"
+  [ -f "$(quota_file "$old")" ] && mv "$(quota_file "$old")" "$(quota_file "$new")"
   if [ -f "$CURRENT_MARKER" ] && [ "$(cut -f1 "$CURRENT_MARKER")" = "$old" ]; then
     set_current_marker "$new" "$(cut -f2 "$CURRENT_MARKER")"
   fi
@@ -369,6 +397,40 @@ cmd_rename() {
 cmd_names() {
   local f
   for f in $(each_profile_file); do jq -r '.name' "$f"; done
+}
+
+cmd_next() {
+  local skip="${1:-}" f name score best="" best_score=101
+  [ -n "$skip" ] || skip=$(current_name || true)
+  for f in $(each_profile_file); do
+    name=$(jq -r '.name' "$f")
+    [ "$name" = "$skip" ] && continue
+    score=$(quota_score "$name")
+    [ "$score" -lt "$HOP_AT" ] 2>/dev/null || continue
+    if [ "$score" -lt "$best_score" ]; then best="$name"; best_score="$score"; fi
+  done
+  [ -n "$best" ] || { printf 'claude-account: no other account below %s%% 5h usage\n' "$HOP_AT" >&2; return 1; }
+  printf '%s\n' "$best"
+}
+
+cmd_quota() {
+  local pct="${1:-}" resets="${2:-0}" name next
+  [ -n "$pct" ] || return 0
+  pct=${pct%%.*}
+  [ "$pct" -ge 0 ] 2>/dev/null || return 0
+  name=$(current_name) || return 0
+  mkdir -p "$ACCOUNTS_DIR"
+  ( umask 077; printf '%s\t%s\t%s\n' "$pct" "${resets:-0}" "$(date +%s)" > "$(quota_file "$name")" )
+  if [ "$pct" -ge "$HOP_AT" ]; then
+    if next=$(cmd_next "$name" 2>/dev/null); then
+      ( umask 077; printf '%s\n' "$next" > "$HOP_FILE" )
+      printf '%s\n' "$next"
+    else
+      rm -f "$HOP_FILE"
+    fi
+  else
+    rm -f "$HOP_FILE"
+  fi
 }
 
 cmd_doctor() {
@@ -399,7 +461,7 @@ main() {
   local cmd="${1:-}"
   [ $# -gt 0 ] && shift
   case "$cmd" in
-    save|use|list|current|remove|rename|names|login) guard_config_dir ;;
+    save|use|list|current|remove|rename|names|login|next|quota) guard_config_dir ;;
   esac
   case "$cmd" in
     login)    cmd_login "$@" ;;
@@ -410,6 +472,8 @@ main() {
     remove|rm) cmd_remove "$@" ;;
     rename|mv) cmd_rename "$@" ;;
     names)    cmd_names ;;
+    next)     cmd_next "$@" ;;
+    quota)    cmd_quota "$@" ;;
     doctor)   cmd_doctor ;;
     -v|--version|version) printf '%s\n' "$VERSION" ;;
     ""|-h|--help|help) usage ;;
