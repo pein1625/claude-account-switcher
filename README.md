@@ -9,12 +9,12 @@ Claude Code holds exactly one login at a time. `claude-account` snapshots each l
 ```
 /plugin marketplace add git@gitlab.9prints.com:thunder/dls-ai-team.git   # 1. once per device (skip if added)
 /plugin install claude-account@dls-ai-team
-/claude-account:claude-account install                                   # 2. CLI shim + claude-as; then: source ~/.zshrc
+/claude-account:claude-account install                                   # 2. CLI shims + claude-as; then: source your shell rc
 ```
 ```bash
 claude-account save work                                # 3. snapshot the account you are logged in as now
 claude-account login personal --email you@example.com   # 4. add the second account (browser opens once)
-claude-as                                               # 5. start claude; hops to the other account when the 5h quota is gone
+claude-as                                               # 5. start claude; hops to the other account at 90% of the 5h quota
 ```
 
 Step 5 needs a statusline (it is what reads the quota): `install` prints the one line to add to `~/.claude/settings.json` if you have none. Details for each step follow.
@@ -27,7 +27,7 @@ Step 5 needs a statusline (it is what reads the quota): `install` prints the one
 /claude-account:claude-account install
 ```
 
-Then `source ~/.zshrc` (or open a new terminal tab). The last step writes two small shims to `~/.local/bin/` (`claude-account`, `claude-account-statusline`), appends a `claude-as` shell function plus tab completion to your shell rc, runs `claude-account doctor`, and prints what to do about the statusline. Set `BIN_DIR` or `RC` in the environment to change the targets. The shim looks up the plugin's current install path on every call, so `/plugin update` never breaks it.
+Then `source ~/.zshrc` (`~/.bashrc` on bash) or open a new terminal tab. The last step writes two small shims to `~/.local/bin/` (`claude-account`, `claude-account-statusline`), adds a `claude-as` shell function plus tab completion to your shell rc (picked from `$SHELL`; an older block is replaced in place), runs `claude-account doctor`, and prints what to do about the statusline. Set `BIN_DIR` or `RC` in the environment to change the targets. The shim looks up the plugin's current install path on every call, so `/plugin update` never breaks it.
 
 Without Claude Code plugins: `git clone git@gitlab.9prints.com:thunder/dls-ai-team.git` and run `plugins/claude-account/scripts/install.sh` from the clone.
 
@@ -89,7 +89,7 @@ claude-account rename work job    # rename a snapshot; tokens and profile move, 
 Claude Code has no built-in account fallback: at the limit it waits for the reset. A running session also keeps its OAuth token in memory, so the account can only change between two processes. `claude-as` makes that hop cheap:
 
 1. The statusline (see below) calls `claude-account quota` on every render. It records the live account's 5-hour usage in `~/.claude/accounts/<name>.quota`; at the threshold (`CLAUDE_ACCOUNT_HOP_AT`, default 90%) it picks the next account and writes its name to `~/.claude/accounts/.hop`.
-2. Next account = the saved account with the lowest recorded usage, where an account whose reset time has passed or that was never measured counts as 0%. If every other account is also above the threshold, nothing is flagged and the statusline shows the reset time instead.
+2. Next account = the saved account with the lowest recorded usage, where an account whose reset time has passed or that was never measured counts as 0%. Usage is recorded only while you run as that account, so `list` shows each account as of the last time it was live. If every other account is also above the threshold, nothing is flagged; the statusline keeps showing the reset time.
 3. When `claude` exits and `.hop` exists, `claude-as` runs `claude-account use <next>` (re-snapshotting the account you leave) and relaunches `claude --continue`: same conversation, other account. Your terminal shows `claude-as: resuming as <next>`.
 
 Three levels of automation:
@@ -100,9 +100,9 @@ Three levels of automation:
 | `claude-as` | statusline shows `5h 91% -> /exit hops to m19`; Claude's reply ends with the same hint | type `/exit` |
 | `claude-as` with `CLAUDE_ACCOUNT_AUTOHOP=1` | statusline shows `-> auto hop to m19 after this turn`; the plugin's `Stop` hook ends the process when Claude finishes the turn; `claude-as` relaunches on `m19` | nothing |
 
-Turn `CLAUDE_ACCOUNT_AUTOHOP=1` on per shell (`export` in your rc) or per launch (`CLAUDE_ACCOUNT_AUTOHOP=1 claude-as`). It only ever acts inside `claude-as` (`CLAUDE_AS_LOOP=1`), only on the main agent's `Stop`, and only on the process that spawned the hook (`CLAUDE_PID`, verified to be an ancestor). Each hop is logged to `~/.claude/accounts/.autohop.log`; `CLAUDE_ACCOUNT_AUTOHOP_DRY_RUN=1` logs without killing.
+Turn `CLAUDE_ACCOUNT_AUTOHOP=1` on per shell (`export` in your rc) or per launch (`CLAUDE_ACCOUNT_AUTOHOP=1 claude-as`). It only ever acts inside `claude-as` (`CLAUDE_AS_LOOP=1`), only at the main agent's turn boundary (`Stop`, or `StopFailure` with a rate-limit error), and only on the process that spawned the hook (`CLAUDE_PID`, verified to be an ancestor). Each hop is logged to `~/.claude/accounts/.autohop.log`; `CLAUDE_ACCOUNT_AUTOHOP_DRY_RUN=1` logs without killing.
 
-What the automatic hop costs: anything you were typing when the turn ended is lost; a long autonomous turn is never cut, the hop waits for it to finish; if the quota runs out mid-turn that turn fails first (`StopFailure`), and the hop happens on the next completed turn. To quit for real while `.hop` is set, exit twice (the second session starts below the threshold and clears the flag) or run `command claude`.
+What the automatic hop costs: anything you were typing when the turn ended is lost; a long autonomous turn is never cut, the hop waits for it to finish. If the quota runs out mid-turn, that turn fails with a rate-limit error; the same hook then flags the hop itself (live account recorded as 100%, next account chosen) and, with auto-hop on, restarts right there. The failed prompt is not replayed: send it again after the resume. This rate-limit path is unit-tested but has not been exercised against a real limit yet. To quit for real while `.hop` is set, exit twice (the second session starts below the threshold and clears the flag) or run `command claude`.
 
 `-p` / `--print` runs never loop.
 
@@ -120,7 +120,7 @@ The statusline is the only place Claude Code exposes the 5-hour usage, so it is 
 "statusLine": { "type": "command", "command": "bash ~/.local/bin/claude-account-statusline" }
 ```
 
-It shows `model | ctx % | 5h % ->reset @account` plus the hop hint. Restart `claude` to pick it up.
+It shows `model | ctx % | 5h % ->reset @account` plus the hop hint. Claude Code picks up a changed `statusLine` command in running sessions too; the quota fields appear after the first reply of a session.
 
 **Already have a statusline script** — source the snippet from it after your script has `OUT` (the line so far), `FIVE` (`.rate_limits.five_hour.used_percentage`) and `FIVE_AT` (`.rate_limits.five_hour.resets_at`):
 
@@ -152,15 +152,16 @@ It shows `model | ctx % | 5h % ->reset @account` plus the hop hint. Restart `cla
 | `claude auth status` still shows the old email | The store was not switched. Run `claude-account doctor`; check `CLAUDE_CONFIG_DIR`. |
 | `claude-account: tool not found under ...` | The plugin was uninstalled or moved. `/plugin install claude-account@dls-ai-team` again, or rerun `install.sh` from a clone. |
 | Every session prints "CLI not linked on this device yet" | Run `/claude-account:claude-account install` once. The hint stops as soon as `~/.local/bin/claude-account` exists. |
-| `claude-account list` shows `-` under 5H, no hop ever happens | The statusline is not feeding `claude-account quota`. Add `scripts/statusline-snippet.sh` to your statusline script. |
+| `claude-account list` shows `-` under 5H, no hop ever happens | The statusline is not feeding `claude-account quota`. Set it up as in the Statusline section (standalone shim, or source the snippet from your own script). |
 | Auto hop did not fire although the statusline showed it | Check `~/.claude/accounts/.autohop.log`. Empty: the session was not started with `claude-as` or `CLAUDE_ACCOUNT_AUTOHOP` is unset. A line with `via=walk` and a wrong pid: report it, and use the one-key mode meanwhile. |
 
 ## Uninstall
 
 ```bash
 claude-account remove work          # per saved account; deletes its Keychain item + profile
-rm ~/.local/bin/claude-account
-# delete the block between "# >>> claude-account >>>" and "# <<< claude-account <<<" in ~/.zshrc
+rm ~/.local/bin/claude-account ~/.local/bin/claude-account-statusline
+# delete the block between "# >>> claude-account >>>" and "# <<< claude-account <<<" in your shell rc
+# remove "statusLine" from ~/.claude/settings.json if it points at claude-account-statusline
 rm -rf ~/.claude/accounts           # profiles, .quota readings, .hop, .autohop.log
 ```
 
@@ -171,12 +172,12 @@ then `/plugin uninstall claude-account@dls-ai-team`. The live login is never tou
 ```
 .claude-plugin/plugin.json        plugin manifest
 skills/claude-account/SKILL.md    in-session skill (/claude-account:claude-account)
-hooks/hooks.json                  SessionStart install hint, UserPromptSubmit hop hint, Stop auto-hop
+hooks/hooks.json                  SessionStart install hint, UserPromptSubmit hop hint, Stop + StopFailure(rate_limit) auto-hop
 scripts/claude-account.sh         the tool (save/use/list/login/next/quota/...)
 scripts/install.sh                shim + claude-as shell function + completion + doctor
 scripts/session-hint.sh           SessionStart hook body
 scripts/hop-hint.sh               UserPromptSubmit hook body
-scripts/autohop-stop.sh           Stop hook body (opt-in, CLAUDE_ACCOUNT_AUTOHOP=1)
+scripts/autohop-stop.sh           Stop/StopFailure hook body (kill only with CLAUDE_ACCOUNT_AUTOHOP=1 inside claude-as)
 scripts/statusline.sh             standalone statusline (shim: ~/.local/bin/claude-account-statusline)
 scripts/statusline-snippet.sh     block to source from an existing statusline: account name, quota recording, hop hint
 ```

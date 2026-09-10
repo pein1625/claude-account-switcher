@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
-# Stop hook. When the statusline flagged a hop (accounts/.hop) and this session runs inside
-# `claude-as` with CLAUDE_ACCOUNT_AUTOHOP=1, end the claude process at the turn boundary;
-# the claude-as loop then switches account and relaunches with --continue.
-[ "${CLAUDE_AS_LOOP:-}" = 1 ] || exit 0
-[ "${CLAUDE_ACCOUNT_AUTOHOP:-}" = 1 ] || exit 0
+# Stop / StopFailure(rate_limit) hook.
+#  - Stop: acts only when the statusline already flagged a hop (accounts/.hop).
+#  - StopFailure rate_limit: the live account just hit its limit; flag the hop here (next account,
+#    live account recorded as 100%) so /exit or the auto-hop can proceed even if the statusline
+#    never got to render the crossing.
+# Then, only inside `claude-as` (CLAUDE_AS_LOOP=1) with CLAUDE_ACCOUNT_AUTOHOP=1, end the claude
+# process at this turn boundary; the claude-as loop switches account and relaunches --continue.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}"
-[ -s "$dir/.hop" ] || exit 0
 
 input=$(cat 2>/dev/null || true)
 if printf '%s' "$input" | jq -e '.agent_id // empty' >/dev/null 2>&1; then exit 0; fi
+event=$(printf '%s' "$input" | jq -r '.hook_event_name // "Stop"' 2>/dev/null || echo Stop)
 
-# Collect the ancestor chain of this hook process (child of the claude process, via sh -c).
+if [ "$event" = StopFailure ]; then
+  cur=$(bash "$HERE/claude-account.sh" current 2>/dev/null | cut -f1 || true)
+  now=$(date +%s); resets=$((now + 18000))
+  if [ -n "$cur" ] && [ -f "$dir/$cur.quota" ]; then
+    IFS=$'\t' read -r _ prev _ < "$dir/$cur.quota"
+    [ "${prev:-0}" -gt "$now" ] 2>/dev/null && resets="$prev"
+  fi
+  bash "$HERE/claude-account.sh" quota 100 "$resets" >/dev/null 2>&1 || true
+fi
+[ -s "$dir/.hop" ] || exit 0
+
+[ "${CLAUDE_AS_LOOP:-}" = 1 ] || exit 0
+[ "${CLAUDE_ACCOUNT_AUTOHOP:-}" = 1 ] || exit 0
+
+# Ancestor chain of this hook process (child of the claude process, via sh -c).
 chain=""; p=$PPID
 while [ "${p:-0}" -gt 1 ]; do
   chain="$chain $p"
@@ -33,6 +50,7 @@ fi
 [ -n "$pid" ] || exit 0
 cmd=$(ps -o command= -p "$pid" 2>/dev/null) || exit 0
 
-printf '%s\thop=%s\tpid=%s\tvia=%s\t%s\n' "$(date +%FT%T)" "$(cat "$dir/.hop")" "$pid" "$([ "$pid" = "${CLAUDE_PID:-}" ] && echo env || echo walk)" "$cmd" >> "$dir/.autohop.log"
+printf '%s\t%s\thop=%s\tpid=%s\tvia=%s\t%s\n' "$(date +%FT%T)" "$event" "$(cat "$dir/.hop")" "$pid" \
+  "$([ "$pid" = "${CLAUDE_PID:-}" ] && echo env || echo walk)" "$cmd" >> "$dir/.autohop.log"
 [ -n "${CLAUDE_ACCOUNT_AUTOHOP_DRY_RUN:-}" ] && exit 0
 kill -TERM "$pid"
