@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION=$(jq -r '.version // "dev"' "$HERE/../.claude-plugin/plugin.json" 2>/dev/null || printf dev)
 LIVE_SERVICE="${CLAUDE_ACCOUNT_LIVE_SERVICE:-Claude Code-credentials}"
 STORE_PREFIX="Claude Code-credentials-acct-"
 ACCOUNTS_DIR="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}"
