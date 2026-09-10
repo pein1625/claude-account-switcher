@@ -4,6 +4,21 @@ Switch between Claude Code subscription accounts in the terminal without logging
 
 Claude Code holds exactly one login at a time. `claude-account` snapshots each login once, then swaps the live one on demand. Switching takes under a second and works from any shell, iTerm2 profile, or script.
 
+## Quick start
+
+```
+/plugin marketplace add git@gitlab.9prints.com:thunder/dls-ai-team.git   # 1. once per device (skip if added)
+/plugin install claude-account@dls-ai-team
+/claude-account:claude-account install                                   # 2. CLI shim + claude-as; then: source ~/.zshrc
+```
+```bash
+claude-account save work                                # 3. snapshot the account you are logged in as now
+claude-account login personal --email you@example.com   # 4. add the second account (browser opens once)
+claude-as                                               # 5. start claude; hops to the other account when the 5h quota is gone
+```
+
+Step 5 needs a statusline (it is what reads the quota): `install` prints the one line to add to `~/.claude/settings.json` if you have none. Details for each step follow.
+
 ## Install (once per device)
 
 ```
@@ -12,7 +27,7 @@ Claude Code holds exactly one login at a time. `claude-account` snapshots each l
 /claude-account:claude-account install
 ```
 
-Then `source ~/.zshrc` (or open a new terminal tab). The last step writes a small shim to `~/.local/bin/claude-account`, appends a `claude-as` shell function plus tab completion to your shell rc, and runs `claude-account doctor`. Set `BIN_DIR` or `RC` in the environment to change the targets. The shim looks up the plugin's current install path on every call, so `/plugin update` never breaks it.
+Then `source ~/.zshrc` (or open a new terminal tab). The last step writes two small shims to `~/.local/bin/` (`claude-account`, `claude-account-statusline`), appends a `claude-as` shell function plus tab completion to your shell rc, runs `claude-account doctor`, and prints what to do about the statusline. Set `BIN_DIR` or `RC` in the environment to change the targets. The shim looks up the plugin's current install path on every call, so `/plugin update` never breaks it.
 
 Without Claude Code plugins: `git clone git@gitlab.9prints.com:thunder/dls-ai-team.git` and run `plugins/claude-account/scripts/install.sh` from the clone.
 
@@ -97,7 +112,24 @@ Create one profile per account and set **General > Command > Send text at start*
 
 ### Statusline (required for the hop, optional otherwise)
 
-`scripts/statusline-snippet.sh` is a drop-in block for your statusline script. It shows the live account's name, feeds the 5-hour reading to `claude-account quota`, and prints the hop hint matching how the session was started. Without a statusline nothing records usage, so `claude-as` never hops and `list` shows `-` in the 5H column. The snippet only reads and writes files under `~/.claude/accounts/`; it never switches accounts itself.
+The statusline is the only place Claude Code exposes the 5-hour usage, so it is what arms the hop: every render feeds the reading to `claude-account quota`. Without it nothing records usage, `claude-as` never hops, and `list` shows `-` in the 5H column.
+
+**No statusline yet** — add to `~/.claude/settings.json` (top level):
+
+```json
+"statusLine": { "type": "command", "command": "bash ~/.local/bin/claude-account-statusline" }
+```
+
+It shows `model | ctx % | 5h % ->reset @account` plus the hop hint. Restart `claude` to pick it up.
+
+**Already have a statusline script** — source the snippet from it after your script has `OUT` (the line so far), `FIVE` (`.rate_limits.five_hour.used_percentage`) and `FIVE_AT` (`.rate_limits.five_hour.resets_at`):
+
+```bash
+. "$(jq -r '.plugins | to_entries[] | select(.key|startswith("claude-account@")) | .value[0].installPath' \
+     ~/.claude/plugins/installed_plugins.json)/scripts/statusline-snippet.sh"
+```
+
+(That resolves the plugin's current install path the same way the shim does, so `/plugin update` does not break it.) The snippet appends ` @account` and the hint to `OUT`. Both files only read and write under `~/.claude/accounts/`; neither switches accounts itself.
 
 ## Caveats
 
@@ -145,5 +177,6 @@ scripts/install.sh                shim + claude-as shell function + completion +
 scripts/session-hint.sh           SessionStart hook body
 scripts/hop-hint.sh               UserPromptSubmit hook body
 scripts/autohop-stop.sh           Stop hook body (opt-in, CLAUDE_ACCOUNT_AUTOHOP=1)
-scripts/statusline-snippet.sh     statusline block: account name, quota recording, hop hint
+scripts/statusline.sh             standalone statusline (shim: ~/.local/bin/claude-account-statusline)
+scripts/statusline-snippet.sh     block to source from an existing statusline: account name, quota recording, hop hint
 ```

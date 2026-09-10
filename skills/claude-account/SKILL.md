@@ -23,7 +23,7 @@ It never prints tokens. Show its output to the user verbatim, then stop; no summ
 | Argument | Do |
 |---|---|
 | (none) | run `current`, then `list`. If 2 or more accounts are saved, end with the hop block below. |
-| `install` | run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh"`. Then tell the user to `source ~/.zshrc` (or open a new terminal tab) so `claude-as` exists. Once per device. |
+| `install` | run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh"`. Then tell the user to `source ~/.zshrc` (or open a new terminal tab) so `claude-as` exists, and repeat the script's statusline line: without a statusline the quota hop never arms. Once per device. |
 | `list`, `current`, `names`, `doctor`, `next` | run it. `list` shows each account's last recorded 5h usage; `next` names the account a hop would go to. |
 | `save [name]` | run it. Snapshots the live login; safe while this session is running. |
 | `rename <old> <new>` | run it. |

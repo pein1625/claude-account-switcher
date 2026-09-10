@@ -43,6 +43,11 @@ exec bash "\$root/scripts/claude-account.sh" "\$@"
 SHIM_EOF
 chmod +x "$SHIM"
 echo "linked  $SHIM  (resolves the plugin path at run time; fallback $PLUGIN_ROOT)"
+
+# Second shim: the standalone statusline, for members who have none yet.
+sed -e 's#/scripts/claude-account.sh#/scripts/statusline.sh#g' -e 's#claude-account: tool not found#claude-account-statusline: script not found#' "$SHIM" > "$SHIM-statusline"
+chmod +x "$SHIM-statusline"
+echo "linked  $SHIM-statusline"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "note    $BIN_DIR is not in PATH. Add to $RC:  export PATH=\"$BIN_DIR:\$PATH\"" ;;
@@ -96,5 +101,12 @@ echo "$verb claude-as() + completion in $RC  (run: source $RC)"
 
 echo
 "$HERE/claude-account.sh" doctor || true
+echo
+if command -v jq >/dev/null 2>&1 && jq -e '.statusLine.command' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" >/dev/null 2>&1; then
+  echo "statusline: you already have one. Source $HERE/statusline-snippet.sh from it so the 5h hop is armed (README > Statusline)."
+else
+  echo "statusline: none configured. Add to ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json:"
+  echo '            "statusLine": { "type": "command", "command": "bash ~/.local/bin/claude-account-statusline" }'
+fi
 echo
 echo "next:   claude-account save <name>     # snapshot the account you are logged in as now"
