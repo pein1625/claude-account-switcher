@@ -1,0 +1,8 @@
+{
+  "description": "Reminds once per session to run the one-time CLI install; silent once ~/.local/bin/claude-account exists.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-hint.sh\"", "timeout": 5 } ] }
+    ]
+  }
+}
