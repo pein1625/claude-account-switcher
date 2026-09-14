@@ -9,13 +9,15 @@ public enum LoginLauncher {
         return """
         #!/bin/bash
         export PATH=\(ShellInstaller.shellQuote(Environment.path))
-        echo "Claude Switcher: đăng nhập account '\(name)' (trình duyệt sẽ mở; login hiện tại không bị đụng)"
+        echo "Claude Switcher: đăng nhập account '\(name)' (login hiện tại không bị đụng)"
+        echo "claude: $(command -v claude || echo 'KHÔNG THẤY trên PATH') $(claude --version 2>/dev/null | head -1)"
+        echo "Trình duyệt sẽ mở trang đăng nhập Claude. Không mở → copy URL mà claude in ra bên dưới vào trình duyệt."
         echo
         \(cmd)
         status=$?
         echo
         if [ $status -eq 0 ]; then echo "Xong. Quay lại Claude Switcher, account sẽ xuất hiện trong danh sách."
-        else echo "Thất bại (exit $status). Xem thông báo phía trên."; fi
+        else echo "Thất bại (exit $status). Xem thông báo phía trên; gửi nội dung cửa sổ này nếu cần hỗ trợ."; fi
         echo "Có thể đóng cửa sổ này."
         """
     }

@@ -31,7 +31,6 @@ struct MenuBarView: View {
     @State private var newName = ""
     @State private var newEmail = ""
     @State private var saveName = ""
-    @State private var confirmRemove: String?
     @State private var confirmRestart: Session?
 
     var body: some View {
@@ -43,7 +42,7 @@ struct MenuBarView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             ForEach(model.profiles) { p in
-                AccountRow(profile: p, confirmRemove: $confirmRemove)
+                AccountRow(profile: p)
             }
             Divider()
             policyRow
@@ -58,24 +57,6 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 380)
-        .alert("Xoá snapshot?", isPresented: Binding(get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } })) {
-            Button("Xoá '\(confirmRemove ?? "")'", role: .destructive) {
-                if let n = confirmRemove { Task { await model.remove(n) } }
-                confirmRemove = nil
-            }
-            Button("Huỷ", role: .cancel) { confirmRemove = nil }
-        } message: {
-            Text("Xoá Keychain item và profile của account này. Lấy lại phải đăng nhập lần nữa. Login hiện tại không bị đụng.")
-        }
-        .alert("Restart session ngay?", isPresented: Binding(get: { confirmRestart != nil }, set: { if !$0 { confirmRestart = nil } })) {
-            Button("Restart --continue", role: .destructive) {
-                if let s = confirmRestart { Task { await model.restartNow(s) } }
-                confirmRestart = nil
-            }
-            Button("Huỷ", role: .cancel) { confirmRestart = nil }
-        } message: {
-            Text("Gửi SIGTERM cho pid \(confirmRestart?.pid ?? 0). Turn đang chạy sẽ bị cắt, text đang gõ mất. claude-as sẽ mở lại bằng account \(model.liveName ?? "?") với --continue.")
-        }
     }
 
     private var header: some View {
@@ -170,10 +151,18 @@ struct MenuBarView: View {
                             Image(systemName: "arrow.triangle.2.circlepath").font(.caption2).foregroundStyle(.blue).help("Sẽ restart ở cuối turn")
                         }
                         if s.account.name != model.liveName || s.account.isAssumed {
-                            Button { confirmRestart = s } label: { Image(systemName: "restart") }
+                            Button { confirmRestart = confirmRestart?.pid == s.pid ? nil : s } label: { Image(systemName: "restart") }
                                 .buttonStyle(.borderless).controlSize(.mini).disabled(!s.isLoop)
                                 .help("Restart ngay bằng account live (--continue)")
                         }
+                    }
+                    if confirmRestart?.pid == s.pid {
+                        HStack(spacing: 6) {
+                            Text("SIGTERM pid \(s.pid): turn đang chạy bị cắt, text đang gõ mất; claude-as mở lại bằng \(model.liveName ?? "?") --continue.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            Button("Restart", role: .destructive) { Task { await model.restartNow(s) }; confirmRestart = nil }
+                            Button("Huỷ") { confirmRestart = nil }
+                        }.controlSize(.mini)
                     }
                 }
                 if !model.setup.hookWired {
@@ -240,7 +229,7 @@ struct MenuBarView: View {
 struct AccountRow: View {
     @EnvironmentObject var model: AppModel
     let profile: AccountProfile
-    @Binding var confirmRemove: String?
+    @State private var confirmingRemove = false
     @State private var renaming = false
     @State private var newName = ""
     @FocusState private var nameFocused: Bool
@@ -263,10 +252,23 @@ struct AccountRow: View {
                         .controlSize(.small).disabled(model.busy)
                 }
                 Menu {
-                    Button("Đổi tên…") { newName = profile.name; renaming = true; nameFocused = true }
-                    Button("Xoá snapshot…", role: .destructive) { confirmRemove = profile.name }.disabled(isLive)
+                    Button("Đổi tên…") { newName = profile.name; renaming = true; confirmingRemove = false; nameFocused = true }
+                    Button("Xoá snapshot…", role: .destructive) { confirmingRemove = true; renaming = false }
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).frame(width: 20)
+            }
+            if confirmingRemove {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isLive
+                         ? "Xoá snapshot '\(profile.name)'? Account đang live: login vẫn giữ nhưng thành “chưa lưu” (không tự hop được cho tới khi Lưu lại). Muốn dùng lại sau phải đăng nhập lần nữa."
+                         : "Xoá snapshot '\(profile.name)' (Keychain item + profile)? Login live không bị đụng. Muốn dùng lại phải đăng nhập lần nữa.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    HStack {
+                        Button("Xoá", role: .destructive) { Task { await model.remove(profile.name) }; confirmingRemove = false }
+                            .disabled(model.busy)
+                        Button("Huỷ") { confirmingRemove = false }
+                    }.controlSize(.small)
+                }
             }
             if renaming {
                 HStack(spacing: 6) {

@@ -126,10 +126,11 @@ enum CLIMain {
         guard let name else { throw SwitcherError("usage: login <name> [--email <email>]") }
         let ctx = try await switcher.loginPrepare(name: name)
         guard let claude = Environment.which("claude") else { throw SwitcherError("claude not found on PATH") }
-        print("Signing in inside a scratch config dir; the current login (\(switcher.current()?.email ?? "none")) is not touched.")
+        print("Signing in inside a scratch config dir (\(ctx.scratch.path)); the current login (\(switcher.current()?.email ?? "none")) is not touched.")
+        print("Running: \(claude) auth login --claudeai\(email.map { " --email \($0)" } ?? "")")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: claude)
-        p.arguments = ["auth", "login"] + (email.map { ["--email", $0] } ?? [])
+        p.arguments = ["auth", "login", "--claudeai"] + (email.map { ["--email", $0] } ?? [])
         var env = ProcessInfo.processInfo.environment
         env["CLAUDE_CONFIG_DIR"] = ctx.scratch.path
         env["PATH"] = Environment.path
