@@ -47,6 +47,7 @@ final class AppModel: ObservableObject {
     var cliPath: String { FileManager.default.isExecutableFile(atPath: Paths.shim.path) ? Paths.shim.path : Self.appBinary }
 
     private var forcedExhausted: [String: Date] = [:]
+    private var forcedAt: [String: Date] = [:]
     private var lastHopAt: Date?
     private var lastSwitchAt: Date?
     private var lastMarker: AccountStore.CurrentMarker?
@@ -231,6 +232,7 @@ final class AppModel: ObservableObject {
                 ?? records[name]?.resetsAt.flatMap { $0 > now ? $0 : nil }
                 ?? now.addingTimeInterval(5 * 3600)
             forcedExhausted[name] = reset
+            forcedAt[name] = now
             store.writeQuotaRecord(name, QuotaRecord(pct: 100, resetsAt: reset, recordedAt: now), now: now)
             store.log("rate_limit event pid \(e.pid) -> \(name) exhausted until \(ISO8601.string(reset))")
         }
@@ -281,8 +283,12 @@ final class AppModel: ObservableObject {
             u.tokenExpiresAt = blob.expiresAt
             if u.isFreshAPI, let five = u.fiveHour {
                 store.writeQuotaRecord(p.name, QuotaRecord(pct: Int(five.pct.rounded(.down)), resetsAt: five.resetsAt, recordedAt: now), now: now)
-                if let until = forcedExhausted[p.name], five.pct < AppSettings.hopAt, five.resetsAt.map({ $0 > until }) ?? true {
+                // A rate-limit event is a strong hint, but a fresher API reading well under both thresholds
+                // overrules it (the event may have come from a misattributed session).
+                if let at = forcedAt[p.name], now > at, five.pct < AppSettings.hopAt, (u.sevenDay?.pct ?? 0) < AppSettings.sevenDayAt {
                     forcedExhausted.removeValue(forKey: p.name)
+                    forcedAt.removeValue(forKey: p.name)
+                    store.log("rate_limit flag for \(p.name) cleared: API shows 5h \(Int(five.pct))%")
                 }
             } else if let prev = next[p.name], prev.fiveHour != nil {
                 u.fiveHour = prev.fiveHour; u.sevenDay = prev.sevenDay; u.extras = prev.extras

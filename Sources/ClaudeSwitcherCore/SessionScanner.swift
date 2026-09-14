@@ -100,13 +100,16 @@ public enum SessionScanner {
 
 public enum SessionAttribution {
     /// `history` must be sorted by time. A session started after switch N and before switch N+1 runs as N's target.
-    /// Sessions older than the first known switch get `.assumed(fallback)`: the steady-state account.
+    /// Sessions older than the first known switch were on that switch's `from` account when it is recorded;
+    /// otherwise they get `.assumed(fallback)`, the steady-state account.
     public static func attribute(_ raw: [RawSession], history: [SwitchEvent], fallback: String?,
                                  loops: [Int32: LoopInfo], cwds: [Int32: String]) -> [Session] {
         raw.map { s in
             let account: Attribution
             if let ev = history.last(where: { $0.at <= s.startedAt }) {
                 account = .known(ev.to)
+            } else if let from = history.first?.from {
+                account = .assumed(from)
             } else if let f = fallback {
                 account = .assumed(f)
             } else {

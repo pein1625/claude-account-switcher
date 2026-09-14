@@ -82,7 +82,11 @@ do {
         RawSession(pid: 3, ppid: 0, startedAt: now.addingTimeInterval(600), command: "claude"),
     ]
     let attributed = SessionAttribution.attribute(raw, history: history, fallback: "m04", loops: [2: LoopInfo(isLoop: true, id: "1-2")], cwds: [3: "/tmp"])
-    equal(attributed[0].account, Attribution.assumed("m04"), "older than history -> assumed")
+    equal(attributed[0].account, Attribution.assumed("m04"), "older than history -> assumed from-account of the first switch")
+    let markerOnly = [SwitchEvent(at: now.addingTimeInterval(100), from: nil, to: "m19", by: "marker")]
+    equal(SessionAttribution.attribute([raw[0]], history: markerOnly, fallback: "m19", loops: [:], cwds: [:])[0].account, Attribution.assumed("m19"), "no from recorded -> fallback")
+    let afterHop = [SwitchEvent(at: now.addingTimeInterval(100), from: "m04", to: "m19", by: "cli")]
+    equal(SessionAttribution.attribute([raw[0]], history: afterHop, fallback: "m19", loops: [:], cwds: [:])[0].account, Attribution.assumed("m04"), "old session after a hop stays on the account it started with")
     equal(attributed[1].account, Attribution.known("m19"))
     equal(attributed[2].account, Attribution.known("m04"))
     equal(attributed[1].loopID, "1-2")
