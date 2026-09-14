@@ -62,6 +62,7 @@ dist: universal
 # Drag-to-Applications disk image. Same Gatekeeper caveat as the zip: without Developer ID + notarization the
 # recipient allows the app once (Privacy & Security > Open Anyway). The image carries the instructions.
 dmg: universal
+	-hdiutil info | grep -o '/Volumes/Claude Switcher[^\t]*' | while read -r v; do hdiutil detach "$$v" -quiet; done
 	rm -rf dist/dmg "$(DMG)"
 	mkdir -p dist/dmg
 	cp -R "$(APP_DIR)" dist/dmg/
