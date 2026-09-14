@@ -241,6 +241,9 @@ struct AccountRow: View {
     @EnvironmentObject var model: AppModel
     let profile: AccountProfile
     @Binding var confirmRemove: String?
+    @State private var renaming = false
+    @State private var newName = ""
+    @FocusState private var nameFocused: Bool
 
     var isLive: Bool { model.liveName == profile.name }
 
@@ -260,9 +263,24 @@ struct AccountRow: View {
                         .controlSize(.small).disabled(model.busy)
                 }
                 Menu {
+                    Button("Đổi tên…") { newName = profile.name; renaming = true; nameFocused = true }
                     Button("Xoá snapshot…", role: .destructive) { confirmRemove = profile.name }.disabled(isLive)
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).frame(width: 20)
+            }
+            if renaming {
+                HStack(spacing: 6) {
+                    TextField("tên mới", text: $newName)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($nameFocused)
+                        .onSubmit { Task { if await model.rename(profile.name, to: newName) { renaming = false } } }
+                    Button("Lưu") { Task { if await model.rename(profile.name, to: newName) { renaming = false } } }
+                        .disabled(model.busy || newName.trimmingCharacters(in: .whitespaces).isEmpty || newName == profile.name)
+                    Button("Huỷ") { renaming = false }
+                }
+                .controlSize(.small)
+                Text("Đổi tên snapshot (Keychain item, profile, lịch sử). Login live không đổi; tên dùng trong `claude-as <tên>`.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             if let eff {
                 bar("5h", eff.fiveHour, eff.fiveResetsAt, threshold: AppSettings.hopAt)

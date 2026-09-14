@@ -182,6 +182,29 @@ public final class AccountStore {
         }.sorted { $0.at < $1.at }
     }
 
+    /// After `rename`, history and plan must follow the new name or session attribution breaks.
+    public static func rewriteSwitches(_ text: String, from old: String, to new: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            var p = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard p.count >= 4 else { return String(line) }
+            if p[1] == old { p[1] = new }
+            if p[2] == old { p[2] = new }
+            return p.joined(separator: "\t")
+        }.joined(separator: "\n")
+    }
+
+    public func renameInSwitches(from old: String, to new: String) {
+        guard let s = try? String(contentsOf: Paths.switchesLog, encoding: .utf8) else { return }
+        writePrivate(Paths.switchesLog, AccountStore.rewriteSwitches(s, from: old, to: new))
+    }
+
+    public func renameInPlan(from old: String, to new: String) {
+        guard var p = readRestartPlan() else { return }
+        if p.to == old { p.to = new }
+        for (pid, target) in p.pids where target == old { p.pids[pid] = new }
+        writeRestartPlan(p)
+    }
+
     public func appendSwitch(_ e: SwitchEvent) {
         Paths.ensureSwitcherDir()
         let line = "\(Int(e.at.timeIntervalSince1970))\t\(e.from ?? "")\t\(e.to)\t\(e.by)\n"

@@ -186,6 +186,9 @@ do {
     equal((rh?["StopFailure"] as? [[String: Any]])?.count, 0)
     equal(removed["a"] as? Int, 1)
 
+    let log = "1\tm04\tm19\tapp\n2\tm19\tm04\tcli\n3\t\tm04\tmarker\nbroken line\n"
+    equal(AccountStore.rewriteSwitches(log, from: "m04", to: "work"), "1\twork\tm19\tapp\n2\tm19\twork\tcli\n3\t\twork\tmarker\nbroken line\n", "rename rewrites from/to fields only")
+
     let plan = RestartPlan(to: "m19", created: now, pids: ["123": "m19"])
     let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
     let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601

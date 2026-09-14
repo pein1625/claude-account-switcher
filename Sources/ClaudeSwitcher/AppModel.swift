@@ -474,15 +474,35 @@ final class AppModel: ObservableObject {
         } catch { lastError = error.localizedDescription }
     }
 
-    func rename(_ old: String, to new: String) async {
-        busyText = "Đang đổi tên…"
+    /// Renames a snapshot everywhere the name is used; the live login itself is untouched.
+    func rename(_ old: String, to new: String) async -> Bool {
+        let new = new.trimmingCharacters(in: .whitespaces)
+        guard Switcher.isValidName(new) else { lastError = "Tên không hợp lệ (chữ, số, . _ @ -)"; return false }
+        guard old != new else { return true }
+        guard !profiles.contains(where: { $0.name == new }) else { lastError = "'\(new)' đã tồn tại"; return false }
+        busyText = "Đang đổi tên \(old) → \(new)…"
         defer { busyText = nil }
         do {
-            _ = try await switcher.rename(old, to: new)
+            let out = try await switcher.rename(old, to: new)
             if let u = usage.removeValue(forKey: old) { usage[new] = u }
             store.writeUsageCache(usage)
+            if let f = forcedExhausted.removeValue(forKey: old) { forcedExhausted[new] = f }
+            if let f = forcedAt.removeValue(forKey: old) { forcedAt[new] = f }
+            store.renameInSwitches(from: old, to: new)
+            store.renameInPlan(from: old, to: new)
+            if let p = pendingExternalPlan {
+                pendingExternalPlan = (from: p.from == old ? new : p.from, to: p.to == old ? new : p.to, at: p.at)
+            }
+            lastMarker = store.currentMarker()
+            store.log("rename \(old) -> \(new): \(out)")
+            lastError = nil
             reloadProfiles()
-        } catch { lastError = error.localizedDescription }
+            await scanSessions()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
     }
 
     /// Drift repair: the live token really belongs to X, config says Y. Save the live blob back into X's

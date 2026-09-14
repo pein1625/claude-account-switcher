@@ -36,7 +36,7 @@ AirDrop / Slack mới gắn cờ đó, `curl` thì không.
 **Tự tải file về rồi chạy** (cũng không prompt, vì vẫn là `curl`):
 
 ```bash
-curl -fL -o ~/Downloads/ClaudeSwitcher.dmg https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.2.0.dmg
+curl -fL -o ~/Downloads/ClaudeSwitcher.dmg https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.2.1.dmg
 open ~/Downloads/ClaudeSwitcher.dmg        # kéo app vào Applications, mở
 ```
 
