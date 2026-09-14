@@ -7,7 +7,7 @@ VERSION  = $(shell sed -n 's/.*static let version = "\(.*\)".*/\1/p' Sources/Cla
 DIST     = dist/$(APP)-$(VERSION).zip
 DMG      = dist/$(APP)-$(VERSION).dmg
 
-.PHONY: all build test app icon install run status doctor clean universal dist dmg uninstall
+.PHONY: all build test app icon install run status doctor clean universal dist dmg uninstall release
 
 all: app
 
@@ -77,6 +77,11 @@ dmg: universal
 
 uninstall:
 	bash scripts/uninstall.sh
+
+# Publish a GitHub release with the dmg; scripts/install.sh downloads from here.
+release: dmg
+	gh release create "v$(VERSION)" "$(DMG)" "$(DMG).sha256" --title "Claude Switcher $(VERSION)" --generate-notes \
+	  --notes "Install: \`curl -fsSL https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/scripts/install.sh | bash\`  (sha256 of the dmg in the .sha256 asset)"
 
 clean:
 	rm -rf .build .build-x86_64 build dist

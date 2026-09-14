@@ -23,8 +23,17 @@ Standalone: một `.app`, không cần plugin hay công cụ nào khác ngoài C
 
 ## Cài
 
-**Từ file:** mở `ClaudeSwitcher-<version>.dmg`, kéo app vào Applications, mở. App ký adhoc (không notarize)
-nên macOS chặn lần đầu — *"Apple could not verify… free of malware"* → **System Settings › Privacy &
+**Một dòng (khuyên dùng):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/scripts/install.sh | bash
+```
+
+Tải dmg mới nhất từ GitHub Releases bằng `curl`, copy app vào `/Applications`, mở. Không có prompt Gatekeeper:
+Gatekeeper chỉ chặn file mang cờ quarantine, mà chỉ trình duyệt / AirDrop / Slack mới gắn cờ đó, `curl` thì không.
+
+**Từ file dmg gửi tay:** mở `ClaudeSwitcher-<version>.dmg`, kéo app vào Applications, mở. App ký adhoc (không
+notarize) nên macOS chặn lần đầu — *"Apple could not verify… free of malware"* → **System Settings › Privacy &
 Security › Open Anyway** (macOS 15+ bỏ right-click › Open), hoặc:
 
 ```bash
@@ -128,8 +137,10 @@ make dmg      # → dist/ClaudeSwitcher-<version>.dmg (universal arm64 + x86_64)
 make dist     # → .zip
 ```
 
-Người nhận: xem mục **Cài**. Muốn bỏ bước Open Anyway cần Apple Developer ID + notarize (`xcrun notarytool`,
-cần Xcode). Không copy `~/.claude/accounts/` hay Keychain sang máy khác: token gắn theo máy.
+`make release` đẩy dmg lên GitHub Releases (`gh`); từ đó người nhận chỉ cần lệnh `curl … | bash` ở mục **Cài**,
+không gặp Gatekeeper. Gửi dmg tay thì họ phải Open Anyway một lần; bỏ hẳn bước đó chỉ có Apple Developer ID +
+notarize (`xcrun notarytool`, cần Xcode). Không copy `~/.claude/accounts/` hay Keychain sang máy khác: token
+gắn theo máy.
 
 ## Gỡ cài đặt
 
