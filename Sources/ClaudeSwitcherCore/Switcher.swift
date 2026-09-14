@@ -230,6 +230,14 @@ public struct Switcher {
         }
         guard let blob, blob.hasRefreshToken else { throw SwitcherError("new credentials are not an OAuth blob (API-key login?)") }
 
+        // The browser approves whichever claude.ai session it already has: signing in "as another account"
+        // silently yields the same account again. Refuse rather than store a duplicate under a new name.
+        if let uuid = profile["accountUuid"] as? String,
+           let dup = store.loadProfiles().first(where: { $0.uuid == uuid }) {
+            if let service, service != Keychain.liveService { await Keychain.delete(service: service) }
+            throw SwitcherError("the browser signed in as '\(dup.name)' (\(dup.email)) again - that account is already saved. Log out of claude.ai in the browser (or use a private window) and retry `login \(name)`.")
+        }
+
         return try await withLock {
             try await Keychain.write(service: Keychain.savedService(name), raw: blob.raw)
             try store.writeProfile(name: name, oauthAccount: profile, subscriptionType: blob.subscriptionType)

@@ -23,6 +23,8 @@ Con dung file dmg nay thi:
 
 4. Lan dau dung: "Luu login hien tai..." dat ten cho account dang dang nhap, roi "Them account..."
    cho account thu hai (mo Terminal, dang nhap 1 lan, login hien tai khong bi dung).
+   Trinh duyet dang dang nhap claude.ai bang account nao thi se lay account do -> muon account khac,
+   dang xuat claude.ai truoc hoac mo URL trong cua so rieng tu.
 
 Yeu cau: macOS 14+, Intel hoac Apple Silicon; Claude Code da dang nhap claude.ai (Pro/Max/Team).
 Khong can cai them gi khac.

@@ -25,6 +25,7 @@ public enum LoginLauncher {
         \(prepare)
         echo
         echo "Trình duyệt sẽ mở trang đăng nhập Claude. Không mở → copy URL claude in ra bên dưới vào trình duyệt, rồi dán code lại đây."
+        echo "LƯU Ý: trình duyệt đang đăng nhập claude.ai bằng account nào thì sẽ lấy account đó. Muốn account KHÁC → đăng xuất claude.ai trước hoặc mở URL trong cửa sổ riêng tư."
         echo
         CLAUDE_CONFIG_DIR="$scratch" claude auth login\(emailArg)
         status=$?

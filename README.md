@@ -74,6 +74,10 @@ Mở terminal mới sau đó. Rồi: **Lưu login hiện tại…** đặt tên 
 account thứ hai (mở Terminal chạy `claude auth login` trong config dir tạm; trình duyệt mở trang đăng nhập —
 không mở thì copy URL trong Terminal vào trình duyệt; login hiện tại không bị đụng).
 
+Trình duyệt đang đăng nhập claude.ai bằng account nào thì OAuth **tự duyệt account đó**, không hỏi. Muốn thêm account
+khác: đăng xuất claude.ai trên trình duyệt trước, hoặc copy URL vào **cửa sổ riêng tư**. App từ chối lưu nếu account
+vừa đăng nhập trùng với snapshot đã có.
+
 ## Cách hoạt động
 
 ### Store
