@@ -1,0 +1,423 @@
+import SwiftUI
+import ClaudeSwitcherCore
+
+struct MenuBarLabel: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        let live = model.liveName ?? model.liveAccount?.emailAddress?.split(separator: "@").first.map(String.init) ?? "?"
+        let eff = model.liveName.flatMap { model.effective($0) }
+        let pct = eff.map { Format.pct($0.fiveHour) } ?? ""
+        HStack(spacing: 3) {
+            Image(systemName: symbol(eff))
+            Text(pct.isEmpty ? live : "\(live) \(pct)")
+        }
+    }
+
+    private func symbol(_ e: Effective?) -> String {
+        guard let e else { return "person.crop.circle.badge.questionmark" }
+        if model.drift != nil { return "exclamationmark.triangle" }
+        if e.fiveHour >= AppSettings.hopAt { return "person.crop.circle.badge.exclamationmark" }
+        if e.fiveHour >= 70 { return "person.crop.circle.badge.clock" }
+        return "person.crop.circle.badge.checkmark"
+    }
+}
+
+struct MenuBarView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var showAdd = false
+    @State private var showSave = false
+    @State private var showSessions = false
+    @State private var newName = ""
+    @State private var newEmail = ""
+    @State private var saveName = ""
+    @State private var confirmRemove: String?
+    @State private var confirmRestart: Session?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+            if model.profiles.isEmpty {
+                Text("Chưa có account nào được lưu. Bấm “Lưu login hiện tại” để bắt đầu.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(model.profiles) { p in
+                AccountRow(profile: p, confirmRemove: $confirmRemove)
+            }
+            Divider()
+            policyRow
+            if let d = model.drift { driftRow(d) }
+            if let plan = model.plan { planRow(plan) }
+            sessionsRow
+            if let err = model.lastError {
+                Text(err).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
+            Divider()
+            actions
+        }
+        .padding(12)
+        .frame(width: 380)
+        .alert("Xoá snapshot?", isPresented: Binding(get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } })) {
+            Button("Xoá '\(confirmRemove ?? "")'", role: .destructive) {
+                if let n = confirmRemove { Task { await model.remove(n) } }
+                confirmRemove = nil
+            }
+            Button("Huỷ", role: .cancel) { confirmRemove = nil }
+        } message: {
+            Text("Xoá Keychain item và profile của account này. Lấy lại phải đăng nhập lần nữa. Login hiện tại không bị đụng.")
+        }
+        .alert("Restart session ngay?", isPresented: Binding(get: { confirmRestart != nil }, set: { if !$0 { confirmRestart = nil } })) {
+            Button("Restart --continue", role: .destructive) {
+                if let s = confirmRestart { Task { await model.restartNow(s) } }
+                confirmRestart = nil
+            }
+            Button("Huỷ", role: .cancel) { confirmRestart = nil }
+        } message: {
+            Text("Gửi SIGTERM cho pid \(confirmRestart?.pid ?? 0). Turn đang chạy sẽ bị cắt, text đang gõ mất. claude-as sẽ mở lại bằng account \(model.liveName ?? "?") với --continue.")
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Claude Switcher").font(.headline)
+            Spacer()
+            if let t = model.busyText {
+                ProgressView().controlSize(.small)
+                Text(t).font(.caption).foregroundStyle(.secondary)
+            } else if let at = model.lastPollAt {
+                Text("đo \(Format.ago(at)) trước").font(.caption).foregroundStyle(.secondary)
+            }
+            Button { Task { await model.pollUsage(force: true); await model.scanSessions() } } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless).help("Đo lại quota + quét session")
+        }
+    }
+
+    private var policyRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: $model.autoSwitch) {
+                Text("Tự hop khi 5h ≥ \(Int(AppSettings.hopAt))%").font(.callout)
+            }.toggleStyle(.switch).controlSize(.small)
+            Text(decisionText).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var decisionText: String {
+        switch model.decision {
+        case .stay(let s): return "Ổn: \(s)"
+        case .hop(let to, let reason): return model.autoSwitch ? "Sẽ hop → \(to) (\(reason))" : "Nên hop → \(to) (\(reason)) — auto đang tắt"
+        case .allExhausted(let next): return "Tất cả account đều hết quota" + (next.map { ", reset sớm nhất \(Format.clock($0))" } ?? "")
+        case .hold(let why): return "Chờ: \(why)"
+        }
+    }
+
+    private func driftRow(_ d: DriftInfo) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Keychain lệch: token live thuộc \(d.tokenAccountName ?? d.tokenEmail ?? "?"), config nói \(d.configName ?? "?")").font(.caption)
+                Button("Sửa lệch (lưu token về đúng snapshot, khôi phục \(d.configName ?? "?"))") { Task { await model.realign() } }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func planRow(_ plan: RestartPlan) -> some View {
+        HStack {
+            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.blue)
+            Text("\(plan.pids.count) session sẽ restart --continue sang \(plan.to) ở cuối turn").font(.caption)
+            Spacer()
+            Button("Huỷ") { model.cancelPlan() }.controlSize(.mini)
+        }
+    }
+
+    private var sessionsRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button { showSessions.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: showSessions ? "chevron.down" : "chevron.right").font(.caption2)
+                    Text("\(model.sessions.count) session claude đang chạy").font(.callout)
+                    Spacer()
+                    Text(sessionSummary).font(.caption).foregroundStyle(.secondary)
+                }
+            }.buttonStyle(.plain)
+            if showSessions {
+                ForEach(model.sessions) { s in
+                    HStack(spacing: 6) {
+                        Text(String(s.pid)).font(.caption.monospaced()).frame(width: 46, alignment: .leading)
+                        Text(accountLabel(s)).font(.caption).frame(width: 60, alignment: .leading)
+                        Text(s.cwd.map { ($0 as NSString).lastPathComponent } ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        Text(Format.ago(s.startedAt)).font(.caption2).foregroundStyle(.secondary)
+                        if !s.isLoop {
+                            Text("no loop").font(.caption2).foregroundStyle(.orange).help("Không chạy qua claude-as: không tự relaunch được")
+                        }
+                        if model.plan?.pids[String(s.pid)] != nil {
+                            Image(systemName: "arrow.triangle.2.circlepath").font(.caption2).foregroundStyle(.blue).help("Sẽ restart ở cuối turn")
+                        }
+                        if s.account.name != model.liveName || s.account.isAssumed {
+                            Button { confirmRestart = s } label: { Image(systemName: "restart") }
+                                .buttonStyle(.borderless).controlSize(.mini).disabled(!s.isLoop)
+                                .help("Restart ngay bằng account live (--continue)")
+                        }
+                    }
+                }
+                if !model.hookInstalled {
+                    Text("Hook chưa cài → session cũ không tự restart theo pid. Cài trong Cài đặt › Hook.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    private var sessionSummary: String {
+        var counts: [String: Int] = [:]
+        for s in model.sessions { counts[s.account.name ?? "?", default: 0] += 1 }
+        return counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: " · ")
+    }
+
+    private func accountLabel(_ s: Session) -> String {
+        switch s.account {
+        case .known(let n): return n
+        case .assumed(let n): return "~\(n)"
+        case .unknown: return "?"
+        }
+    }
+
+    private var actions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button(showAdd ? "Đóng" : "Thêm account…") { showAdd.toggle(); showSave = false }
+                Button(showSave ? "Đóng" : "Lưu login hiện tại…") { showSave.toggle(); showAdd = false }
+                Spacer()
+                SettingsLink { Image(systemName: "gearshape") }.buttonStyle(.borderless).help("Cài đặt")
+                Button { NSApplication.shared.terminate(nil) } label: { Image(systemName: "power") }.buttonStyle(.borderless).help("Thoát")
+            }
+            .controlSize(.small)
+            if showAdd {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Mở Terminal chạy `claude-account login <tên>`: đăng nhập account KHÁC trong config dir tạm, login hiện tại không bị đụng.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    HStack {
+                        TextField("tên (vd m07)", text: $newName).textFieldStyle(.roundedBorder)
+                        TextField("email (tuỳ chọn)", text: $newEmail).textFieldStyle(.roundedBorder)
+                        Button("Đăng nhập") {
+                            Task { await model.addAccount(name: newName.trimmingCharacters(in: .whitespaces), email: newEmail.trimmingCharacters(in: .whitespaces)) }
+                            showAdd = false
+                        }.disabled(newName.isEmpty)
+                    }.controlSize(.small)
+                }
+            }
+            if showSave {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Snapshot login đang có trong Keychain dưới một tên (\(model.liveAccount?.emailAddress ?? "chưa login")).")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    HStack {
+                        TextField("tên", text: $saveName).textFieldStyle(.roundedBorder)
+                        Button("Lưu") { Task { await model.saveCurrent(as: saveName.trimmingCharacters(in: .whitespaces)) }; showSave = false }
+                            .disabled(saveName.isEmpty)
+                    }.controlSize(.small)
+                }
+            }
+        }
+    }
+}
+
+struct AccountRow: View {
+    @EnvironmentObject var model: AppModel
+    let profile: AccountProfile
+    @Binding var confirmRemove: String?
+
+    var isLive: Bool { model.liveName == profile.name }
+
+    var body: some View {
+        let eff = model.effective(profile.name)
+        let u = model.usage[profile.name]
+        let sessions = model.sessions.filter { $0.account.name == profile.name }.count
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle().fill(isLive ? Color.green : Color.secondary.opacity(0.4)).frame(width: 8, height: 8)
+                Text(profile.name).font(.system(.body, design: .rounded).weight(.semibold))
+                if isLive { Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(.green) }
+                Text("\(profile.email) · \(profile.plan) · \(profile.org)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                if !isLive {
+                    Button("Chuyển") { Task { await model.performSwitch(to: profile.name, auto: false) } }
+                        .controlSize(.small).disabled(model.busy)
+                }
+                Menu {
+                    Button("Xoá snapshot…", role: .destructive) { confirmRemove = profile.name }.disabled(isLive)
+                } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).frame(width: 20)
+            }
+            if let eff {
+                bar("5h", eff.fiveHour, eff.fiveResetsAt, threshold: AppSettings.hopAt)
+                if let seven = eff.sevenDay { bar("7d", seven, eff.sevenResetsAt, threshold: AppSettings.sevenDayAt) }
+            }
+            HStack(spacing: 8) {
+                Text(sourceText(eff, u)).font(.caption2).foregroundStyle(.secondary)
+                if sessions > 0 { Text("\(sessions) session").font(.caption2).foregroundStyle(.secondary) }
+                if let extras = u?.extras, !extras.isEmpty {
+                    Text(extras.sorted { $0.key < $1.key }.map { "\($0.key.replacingOccurrences(of: "seven_day_", with: "7d ")) \(Format.pct($0.value.pct))" }.joined(separator: " · "))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(isLive ? Color.green.opacity(0.08) : Color.secondary.opacity(0.06)))
+    }
+
+    private func bar(_ label: String, _ pct: Double, _ reset: Date?, threshold: Double) -> some View {
+        HStack(spacing: 6) {
+            Text(label).font(.caption2.monospaced()).frame(width: 18, alignment: .leading)
+            ProgressView(value: min(max(pct, 0), 100), total: 100)
+                .tint(pct >= threshold ? .red : pct >= 70 ? .orange : .green)
+            Text(Format.pct(pct)).font(.caption.monospacedDigit()).frame(width: 38, alignment: .trailing)
+            Text(reset.map { "→ \(Format.clock($0))" } ?? "").font(.caption2).foregroundStyle(.secondary).frame(width: 78, alignment: .leading)
+        }
+    }
+
+    private func sourceText(_ eff: Effective?, _ u: AccountUsage?) -> String {
+        guard let eff else { return "chưa đo" }
+        switch eff.source {
+        case .api: return "API \(u.map { Format.ago($0.fetchedAt) } ?? "") trước"
+        case .recorded: return "số đã ghi" + (u?.error.map { " · \($0)" } ?? "")
+        case .event: return "rate limit từ session"
+        case .none: return u?.error ?? "chưa đo"
+        }
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject var model: AppModel
+    @AppStorage(AppSettings.Key.hopAt.rawValue) private var hopAt = 90
+    @AppStorage(AppSettings.Key.sevenDayAt.rawValue) private var sevenDayAt = 100
+    @AppStorage(AppSettings.Key.pollSeconds.rawValue) private var pollSeconds = 60
+    @AppStorage(AppSettings.Key.notify.rawValue) private var notify = true
+    @AppStorage(AppSettings.Key.terminalApp.rawValue) private var terminalApp = "Terminal"
+    @AppStorage(AppSettings.Key.restartSessions.rawValue) private var restartSessions = true
+    @AppStorage(AppSettings.Key.cooldownMinutes.rawValue) private var cooldown = 10
+    @State private var extraPath = AppSettings.defaults.string(forKey: AppSettings.Key.extraPath.rawValue) ?? ""
+    @State private var confirmUninstall = false
+
+    var body: some View {
+        TabView {
+            general.tabItem { Label("Chung", systemImage: "slider.horizontal.3") }
+            hooks.tabItem { Label("Hook & CLI", systemImage: "terminal") }
+            doctor.tabItem { Label("Doctor", systemImage: "stethoscope") }
+            uninstall.tabItem { Label("Gỡ cài đặt", systemImage: "trash") }
+        }
+        .frame(width: 520, height: 420)
+        .padding()
+    }
+
+    private var general: some View {
+        Form {
+            Toggle("Tự hop account khi hết quota", isOn: $model.autoSwitch)
+            percentRow("Hop khi 5h ≥", value: $hopAt, hint: "100 = chỉ hop khi cạn hẳn (hoặc session báo rate limit)")
+            percentRow("Coi là hết khi 7d ≥", value: $sevenDayAt, hint: "account có 7d ≥ ngưỡng không được chọn làm đích")
+            Picker("Đo quota mỗi", selection: $pollSeconds) {
+                Text("30s").tag(30); Text("1 phút").tag(60); Text("2 phút").tag(120); Text("5 phút").tag(300)
+            }
+            Stepper("Cooldown giữa 2 lần tự hop: \(cooldown) phút", value: $cooldown, in: 1...60)
+            Toggle("Lên lịch restart --continue cho session của account cũ (cần hook)", isOn: $restartSessions)
+            Toggle("Thông báo macOS", isOn: $notify)
+            Toggle("Chạy khi đăng nhập máy", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            Picker("Terminal cho đăng nhập", selection: $terminalApp) {
+                Text("Terminal").tag("Terminal"); Text("iTerm").tag("iTerm")
+            }
+            Text("Đo bằng token OAuth sẵn trong Keychain (chỉ đọc, không refresh). Account không live: token hết hạn sau vài giờ → dùng số .quota đã ghi, cửa sổ đã reset tính 0% (giống `claude-account next`).")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+    }
+
+    /// Typed percent with arrows; clamped to 1...100, re-evaluates the policy on change.
+    private func percentRow(_ title: String, value: Binding<Int>, hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                Spacer()
+                TextField("", value: value, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 56)
+                Text("%")
+                Stepper("", value: value, in: 1...100).labelsHidden()
+            }
+            Text(hint).font(.caption).foregroundStyle(.secondary)
+        }
+        .onChange(of: value.wrappedValue) { _, v in
+            if v < 1 { value.wrappedValue = 1 } else if v > 100 { value.wrappedValue = 100 }
+            model.evaluate()
+        }
+    }
+
+    private var hooks: some View {
+        Form {
+            Section("Hook restart theo pid") {
+                HStack {
+                    Image(systemName: model.hookInstalled ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(model.hookInstalled ? .green : .orange)
+                    Text(model.hookInstalled ? "Đã cài: ~/.local/bin/claude-switcher-hook + Stop/StopFailure trong ~/.claude/settings.json" : "Chưa cài")
+                        .font(.callout)
+                }
+                Text("Khi hop, app ghi pid các session của account cũ vào .switcher/restart.json. Hook chạy ở cuối mỗi turn, chỉ kết thúc đúng pid đó (claude-as mở lại với --continue). Session của account mới không bị đụng — khác cờ .hop toàn cục của plugin. Session đang chạy chỉ nhận hook sau khi restart; StopFailure(rate_limit) báo cho app ngay để hop tức thì. Có backup settings.json.bak-*.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button(model.hookInstalled ? "Cài lại" : "Cài hook") { Task { await model.installHook() } }
+                    if model.hookInstalled { Button("Gỡ hook") { Task { await model.uninstallHook() } } }
+                }
+            }
+            Section("CLI claude-account") {
+                Text(model.cli.map { "Dùng: \($0.path)" } ?? "Không tìm thấy — chạy /claude-account:claude-account install trong Claude Code")
+                    .font(.callout).foregroundStyle(model.cli == nil ? .red : .primary)
+                TextField("PATH thêm (vd /opt/homebrew/bin:/Users/x/.nvm/versions/node/v24/bin)", text: $extraPath)
+                    .onSubmit { model.setExtraPath(extraPath) }
+                Text("App tự thêm ~/.local/bin, Homebrew và nvm mới nhất vào PATH khi gọi CLI.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Plugin claude-account (tuỳ chọn)") {
+                Text("Patch trong repo app: integration/claude-account-plugin.patch — `quota` của statusline nhường quyền ghi .quota/.hop cho app khi app đang chạy (tránh nhiễm số giữa các session). Không bắt buộc với 2 account.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var uninstall: some View {
+        Form {
+            Section("Gỡ Claude Switcher") {
+                Text("Xoá: hook Stop/StopFailure trong ~/.claude/settings.json (có backup) + ~/.local/bin/claude-switcher-hook, mục “Chạy khi đăng nhập máy”, thư mục ~/.claude/accounts/.switcher/, preferences, và chính app (vào Thùng rác). App thoát sau khi gỡ.")
+                    .font(.callout)
+                Text(Uninstaller.keeps).font(.caption).foregroundStyle(.secondary)
+                Text("Không GUI: `ClaudeSwitcher --uninstall --dry-run` xem trước, bỏ `--dry-run` để gỡ; hoặc Uninstall.command trong file .dmg.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Gỡ cài đặt…", role: .destructive) { confirmUninstall = true }
+                    .disabled(model.busy)
+            }
+        }
+        .formStyle(.grouped)
+        .alert("Gỡ Claude Switcher?", isPresented: $confirmUninstall) {
+            Button("Gỡ", role: .destructive) { Task { await model.uninstall() } }
+            Button("Huỷ", role: .cancel) {}
+        } message: {
+            Text(Uninstaller.plan(removeApp: true).map { "• " + $0.what }.joined(separator: "\n") + "\n\n" + Uninstaller.keeps)
+        }
+    }
+
+    private var doctor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button("Kiểm tra") { Task { await model.runDoctor() } }
+                Spacer()
+                Text("log: \(Paths.appLog.path)").font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            List(model.doctorItems) { item in
+                HStack(alignment: .top) {
+                    Image(systemName: item.level == .ok ? "checkmark.circle.fill" : item.level == .warn ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+                        .foregroundStyle(item.level == .ok ? .green : item.level == .warn ? .orange : .red)
+                    Text(item.text).font(.callout).textSelection(.enabled)
+                }
+            }
+        }
+        .task { if model.doctorItems.isEmpty { await model.runDoctor() } }
+    }
+}

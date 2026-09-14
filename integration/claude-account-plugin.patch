@@ -1,0 +1,28 @@
+Subject: claude-account: let Claude Switcher.app own .quota / .hop while it runs
+
+The menu bar app measures every account's usage straight from the OAuth usage endpoint and plans
+per-pid restarts. While it is alive (heartbeat accounts/.switcher/alive younger than 120 s) the
+statusline's `quota` call must not attribute a session's reading to whatever account is live in
+~/.claude.json (wrong once sessions of two accounts overlap) nor add/remove the global .hop flag.
+The hint still shows whenever .hop exists. Without the app the legacy behaviour is unchanged.
+
+--- a/plugins/claude-account/scripts/claude-account.sh
++++ b/plugins/claude-account/scripts/claude-account.sh
+@@
+ quota_file()      { printf '%s/%s.quota' "$ACCOUNTS_DIR" "$1"; }
++
++# Claude Switcher.app (menu bar) heartbeats here while it runs; it then owns .quota and .hop.
++switcher_alive() {
++  local f="$ACCOUNTS_DIR/.switcher/alive" m
++  [ -f "$f" ] || return 1
++  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
++  [ $(( $(date +%s) - m )) -lt 120 ]
++}
+@@ cmd_quota() {
+   local pct="${1:-}" resets="${2:-0}" name next
+   [ -n "$pct" ] || return 0
++  if switcher_alive; then
++    [ -s "$HOP_FILE" ] && cat "$HOP_FILE"
++    return 0
++  fi
+   pct=${pct%%.*}
