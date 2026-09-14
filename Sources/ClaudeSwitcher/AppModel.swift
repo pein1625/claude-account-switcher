@@ -28,6 +28,11 @@ final class AppModel: ObservableObject {
     @Published var busyText: String?
     @Published var lastPollAt: Date?
     @Published var setup = SetupStatus()
+    @Published var login: LoginState?
+    private var loginFlow: LoginFlow?
+    private var lastKnownLiveName: String?
+    private var autoSaveAttemptAt: Date = .distantPast
+    private var autoSaveUnverified = 0
     @Published var doctorItems: [DoctorItem] = []
     @Published var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     @Published var autoSwitch: Bool = AppSettings.autoSwitch {
@@ -183,6 +188,69 @@ final class AppModel: ObservableObject {
         pollInterval = AppSettings.pollSeconds
         refreshSetup()
         evaluate()
+        planOrphans(now: now)
+        if let n = liveName { lastKnownLiveName = n } else { await autoSaveNewLogin(now: now) }
+    }
+
+    /// `/login` inside a session or a bare `claude auth login` replaces the live login without telling anyone.
+    /// When the live login is not one of the snapshots, save it - after checking that the token in the Keychain
+    /// really belongs to the account ~/.claude.json names (an old session may have written its own token there).
+    private func autoSaveNewLogin(now: Date) async {
+        guard AppSettings.autoSaveLogin, !Self.smokeMode, !busy, let live = liveAccount, let uuid = live.accountUuid else { return }
+        guard now.timeIntervalSince(autoSaveAttemptAt) > 15 else { return }
+        autoSaveAttemptAt = now
+        guard let blob = await Keychain.readLive(), blob.hasRefreshToken else { return }
+        if let profile = await client.fetchProfile(token: blob.accessToken) {
+            if (200..<300).contains(profile.status) {
+                autoSaveUnverified = 0
+                if let tokenUuid = profile.uuid, tokenUuid != uuid {
+                    let owner = profiles.first { $0.uuid == tokenUuid }
+                    drift = DriftInfo(tokenEmail: profile.email, tokenUuid: tokenUuid, tokenAccountName: owner?.name, configName: nil)
+                    store.log("new login \(live.emailAddress ?? "?") NOT saved: live token belongs to \(owner?.name ?? profile.email ?? tokenUuid)")
+                    return
+                }
+            } else if profile.status == 401 || profile.status == 403 {
+                store.log("new login \(live.emailAddress ?? "?") not saved yet: token rejected (HTTP \(profile.status))")
+                return
+            } else {
+                // endpoint unavailable (5xx / 404): after a few tries trust the config file
+                autoSaveUnverified += 1
+                guard autoSaveUnverified >= 3 else { return }
+            }
+        } else {
+            return // offline: try again on the next tick
+        }
+        let name = Switcher.suggestName(email: live.emailAddress, taken: profiles.map(\.name))
+        do {
+            let out = try await switcher.save(name: name)
+            store.appendSwitch(SwitchEvent(at: now, from: lastKnownLiveName, to: name, by: "login"))
+            lastMarker = store.currentMarker()          // not an external `use`: no restart plan for old sessions
+            lastSwitchAt = now
+            lastKnownLiveName = name
+            store.log("auto-saved new login as '\(name)': \(out.split(separator: "\n").first ?? "")")
+            reloadProfiles()
+            Notifier.post("Đã lưu login mới là '\(name)'", "\(live.emailAddress ?? ""). Đổi tên trong menu (⋯ › Đổi tên) nếu muốn.")
+            await pollUsage()
+        } catch {
+            store.log("auto-save of new login failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Sessions still on an exhausted account while the live account has room: restart them onto the live
+    /// account at their next turn boundary. Covers sessions the hop policy never looks at (it only weighs the
+    /// live account) - e.g. after a `/login` moved the live login elsewhere.
+    private func planOrphans(now: Date) {
+        guard AppSettings.restartSessions, let live = liveName, let liveEff = effective(live, now: now),
+              !HopPolicy.isExhausted(liveEff, AppSettings.thresholds) else { return }
+        let planned = Set((plan?.pids ?? [:]).keys)
+        let orphans = sessions.filter { s in
+            guard let acct = s.account.name, acct != live, s.isLoop, !planned.contains(String(s.pid)) else { return false }
+            guard let eff = effective(acct, now: now) else { return false }
+            return HopPolicy.isExhausted(eff, AppSettings.thresholds)
+        }
+        guard !orphans.isEmpty else { return }
+        planRestarts(for: orphans, to: live)
+        Notifier.post("\(orphans.count) session trên account hết quota", "Sẽ restart --continue sang \(live) ở cuối turn.")
     }
 
     /// `claude-switcher use` / `claude-account use` from a terminal (or a claude-as loop) rewrites `.current`;
@@ -252,6 +320,13 @@ final class AppModel: ObservableObject {
             forcedAt[name] = now
             store.writeQuotaRecord(name, QuotaRecord(pct: 100, resetsAt: reset, recordedAt: now), now: now)
             store.log("rate_limit event pid \(e.pid) -> \(name) exhausted until \(ISO8601.string(reset))")
+            // the hook is waiting (up to 5 s) for a plan entry: a session on a non-live account with a healthy
+            // live account gets one right away
+            if let live = liveName, name != live, let liveEff = effective(live, now: now),
+               !HopPolicy.isExhausted(liveEff, AppSettings.thresholds),
+               let s = sessions.first(where: { $0.pid == e.pid }), s.isLoop, AppSettings.restartSessions {
+                planRestarts(for: [s], to: live)
+            }
         }
     }
 
@@ -455,12 +530,39 @@ final class AppModel: ObservableObject {
         guard Switcher.isValidName(name) else { lastError = "Tên không hợp lệ (chữ, số, . _ @ -)"; return }
         guard !profiles.contains(where: { $0.name == name }) else { lastError = "'\(name)' đã tồn tại"; return }
         guard Environment.which("claude") != nil else { lastError = "Không thấy `claude` trên PATH — thêm đường dẫn trong Cài đặt › Shell › PATH thêm"; return }
+        if AppSettings.loginViaTerminal {
+            do {
+                try await LoginLauncher.open(cli: cliPath, name: name, email: email.isEmpty ? nil : email, terminalApp: AppSettings.terminalApp)
+                lastError = nil
+                store.log("login window opened for \(name)")
+            } catch { lastError = error.localizedDescription }
+            return
+        }
+        if let f = loginFlow, !f.state.phase.isTerminal { lastError = "Đang có một đăng nhập chạy ('\(f.name)') — huỷ nó trước"; return }
         do {
-            try await LoginLauncher.open(cli: cliPath, name: name, email: email.isEmpty ? nil : email, terminalApp: AppSettings.terminalApp)
+            loginFlow = try await LoginFlow(name: name, email: email.isEmpty ? nil : email, switcher: switcher,
+                                            privateWindow: AppSettings.loginPrivateWindow) { [weak self] st in
+                guard let self else { return }
+                self.login = st
+                if case .done(let msg) = st.phase {
+                    self.store.log("login \(st.name): \(msg.split(separator: "\n").first ?? "")")
+                    Notifier.post("Đã thêm account '\(st.name)'", msg.split(separator: "\n").first.map(String.init) ?? "")
+                    self.reloadProfiles()
+                    Task { await self.pollUsage() }
+                } else if case .failed(let why) = st.phase {
+                    self.store.log("login \(st.name) failed: \(why)")
+                }
+            }
+            login = loginFlow?.state
             lastError = nil
-            store.log("login window opened for \(name)")
+            store.log("in-app login started for \(name)")
         } catch { lastError = error.localizedDescription }
     }
+
+    func loginReopen(privateWindow: Bool) { loginFlow?.reopen(privateWindow: privateWindow) }
+    func loginSubmitCode(_ code: String) { loginFlow?.submitCode(code) }
+    func loginCancel() { loginFlow?.cancel() }
+    func loginDismiss() { if login?.phase.isTerminal == true { login = nil; loginFlow = nil } }
 
     func remove(_ name: String) async {
         busyText = "Đang xoá \(name)…"

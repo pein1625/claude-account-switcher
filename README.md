@@ -35,7 +35,7 @@ file mang cờ quarantine, mà chỉ trình duyệt / AirDrop / Slack mới gắ
 
 ### Cách 2 — tải file dmg
 
-Link: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.2.3.dmg
+Link: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.3.0.dmg
 
 1. Mở dmg, kéo `ClaudeSwitcher` vào `Applications` (cửa sổ có mũi tên).
 2. Mở app từ Applications. Vì app ký adhoc (chưa notarize), macOS hiện hộp thoại:
@@ -70,13 +70,19 @@ App hỏi **“Bật hop tự động?”** → *Cài*. Nó ghi (đều có back
 | hook `Stop` + `StopFailure(rate_limit)` | `~/.claude/settings.json` | kết thúc đúng session cần hop ở cuối turn |
 | hàm `claude-as` + `alias claude='claude-as'` | `~/.zshrc` (hoặc `~/.bashrc`) | vòng lặp mở lại `claude --continue` bằng account mới |
 
-Mở terminal mới sau đó. Rồi: **Lưu login hiện tại…** đặt tên cho account đang đăng nhập → **Thêm account…** cho
-account thứ hai (mở Terminal chạy `claude auth login` trong config dir tạm; trình duyệt mở trang đăng nhập —
-không mở thì copy URL trong Terminal vào trình duyệt; login hiện tại không bị đụng).
+Mở terminal mới sau đó. Account đang đăng nhập được **tự lưu** (tên = phần trước `@` của email; ⋯ › Đổi tên nếu
+muốn). Thêm account thứ hai: **Thêm account…** → tên, email → app tự chạy `claude auth login` ngầm và mở trang
+đăng nhập trong **cửa sổ riêng tư** của trình duyệt (Chrome/Brave/Edge/Firefox; Safari không có chế độ này qua dòng
+lệnh → cửa sổ thường). Đăng nhập bằng account mới, bấm Authorize → app nhận kết quả, snapshot, báo xong ngay trong
+menu. Login hiện tại không bị đụng, không cần Terminal.
 
-Trình duyệt đang đăng nhập claude.ai bằng account nào thì OAuth **tự duyệt account đó**, không hỏi. Muốn thêm account
-khác: đăng xuất claude.ai trên trình duyệt trước, hoặc copy URL vào **cửa sổ riêng tư**. App từ chối lưu nếu account
-vừa đăng nhập trùng với snapshot đã có.
+Vì sao cửa sổ riêng tư: trình duyệt đang giữ phiên claude.ai của account nào thì OAuth **tự duyệt account đó**, không
+hỏi, kể cả khi URL có `login_hint`. App từ chối lưu nếu account vừa đăng nhập trùng snapshot đã có (nút *Thử lại
+trong cửa sổ riêng tư*). Panel đăng nhập có *Mở lại*, *Copy link*, ô dán code (khi dùng URL dự phòng), *Huỷ*.
+
+Đăng nhập theo cách khác (`/login` trong một session, `claude auth login` ngoài terminal) cũng được: app phát hiện
+login live chưa có snapshot, kiểm tra token trong Keychain đúng là của account đó (`GET /api/oauth/profile`), rồi tự
+lưu. Cài đặt › Chung có tắt (*Tự lưu login mới*, *cửa sổ riêng tư*, *đăng nhập qua Terminal* để khắc phục sự cố).
 
 ## Cách hoạt động
 
@@ -120,10 +126,21 @@ Một process `claude` giữ token trong RAM cả đời → chỉ đổi accoun
    account mới không bị đụng; nhiều session hop cùng lúc không tranh nhau một file.
 4. Rate limit giữa turn: hook ghi `events.log`, app đánh dấu account đó 100% và hop ngay; hook chờ tối đa 5s cho
    plan rồi restart luôn.
+5. Session "mồ côi": đang chạy trên account đã hết quota trong khi account live còn chỗ (ví dụ sau `/login` sang
+   account khác) → app lên plan restart chúng sang account live ở cuối turn, không chờ chính sách hop.
 
 Session đang chạy chỉ nhận hook sau khi restart một lần (settings.json đọc lúc start). Session không qua
 `claude-as` (“no loop”) không bị kill — app gợi ý `/exit` rồi `claude --continue`. Nút restart cạnh mỗi session =
 SIGTERM ngay (cắt turn đang chạy), có xác nhận.
+
+### Đăng nhập trong app (kỹ thuật)
+
+`claude auth login` là TUI (Ink): cần stdio là tty và raw mode. Chạy nó bằng Foundation `Process` kế thừa terminal
+thật thì bị SIGTTOU dừng im lặng (khác process group); chạy không tty thì Ink từ chối. App mở một pseudo-terminal
+riêng (`posix_openpt` + `posix_spawn` với `POSIX_SPAWN_SETSID`), chạy claude trong `CLAUDE_CONFIG_DIR` tạm, đặt một
+`open` giả đầu PATH để bắt URL claude muốn mở (URL này có `redirect_uri=localhost:<port>` → code tự quay về; URL in
+ra màn hình dùng `platform.claude.com` và bắt dán code — app dùng làm dự phòng). Kết thúc: snapshot vào Keychain
+`…-acct-<name>` + `<name>.json`, xoá item Keychain tạm, dọn thư mục tạm.
 
 ### Lệch Keychain
 
@@ -141,7 +158,7 @@ claude-switcher save [name]                snapshot login hiện tại
 claude-switcher use <name> [--force]       đổi login live
 claude-switcher login <name> [--email x]   đăng nhập account khác (config dir tạm), snapshot, live không đổi
 claude-switcher remove <name> | rename <old> <new>
-claude-switcher status [--no-api] | doctor
+claude-switcher status [--no-api] | doctor | whoami   (whoami: account trong config vs. chủ thật của token live)
 claude-switcher install [--no-rc] | uninstall [--dry-run] [--keep-app]
 ```
 

@@ -32,8 +32,14 @@ public struct UsageClient {
             let (data, resp) = try await session.data(for: request(Self.usageURL, token: token))
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(code) else {
-                let body = String(decoding: data.prefix(300), as: UTF8.self)
-                return AccountUsage(fetchedAt: now, source: .api, httpStatus: code, error: "HTTP \(code) \(body)")
+                var detail = "HTTP \(code)"
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let err = obj["error"] as? [String: Any], let type = err["type"] as? String {
+                    detail += " \(type)"
+                } else if !data.isEmpty {
+                    detail += " " + String(decoding: data.prefix(80), as: UTF8.self).replacingOccurrences(of: "\n", with: " ")
+                }
+                return AccountUsage(fetchedAt: now, source: .api, httpStatus: code, error: detail)
             }
             guard var parsed = Self.parseUsage(data, now: now) else {
                 return AccountUsage(fetchedAt: now, source: .api, httpStatus: code, error: "unexpected usage payload")

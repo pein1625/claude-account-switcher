@@ -6,7 +6,7 @@ import ClaudeSwitcherCore
 enum CLIMain {
     static let commands: Set<String> = [
         "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login", "login-prepare", "login-finish",
-        "status", "doctor", "hook", "install", "uninstall", "version", "help",
+        "status", "doctor", "hook", "install", "uninstall", "version", "help", "whoami",
         "--version", "-v", "--help", "-h", "--status", "--doctor", "--uninstall",
     ]
 
@@ -95,6 +95,14 @@ enum CLIMain {
                 guard rest.count == 2 else { return fail("usage: login-finish <name> <scratch-dir>") }
                 let ctx = try Switcher.LoginContext.load(scratch: URL(fileURLWithPath: rest[1]))
                 out(try await switcher.loginFinish(name: rest[0], ctx: ctx))
+            case "whoami":
+                // config account vs. the account the live Keychain token really belongs to
+                let live = store.liveOAuthAccount()
+                out("config: \(live?.emailAddress ?? "-") \(live?.accountUuid ?? "-") (\(switcher.currentName() ?? "unsaved"))")
+                guard let blob = await Keychain.readLive() else { return fail("no live Keychain item") }
+                let p = await UsageClient().fetchProfile(token: blob.accessToken)
+                out("token:  \(p?.email ?? "-") \(p?.uuid ?? "-") HTTP \(p?.status ?? 0)\(blob.expiresAt.map { " · access token expires \(Format.clock($0))" } ?? "")")
+                if let p, let u = p.uuid, let c = live?.accountUuid { out(u == c ? "match" : "DRIFT: token and config disagree") }
             case "status", "--status":
                 await status(store: store, noAPI: rest.contains("--no-api"))
             case "doctor", "--doctor":

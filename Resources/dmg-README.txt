@@ -21,10 +21,10 @@ Con dung file dmg nay thi:
      ham claude-as + alias claude vao ~/.zshrc (hoac ~/.bashrc)   (co backup)
    Mo terminal moi sau do. Cho phep thong bao khi duoc hoi. Icon nam tren menu bar canh dong ho.
 
-4. Lan dau dung: "Luu login hien tai..." dat ten cho account dang dang nhap, roi "Them account..."
-   cho account thu hai (mo Terminal, dang nhap 1 lan, login hien tai khong bi dung).
-   Trinh duyet dang dang nhap claude.ai bang account nao thi se lay account do -> muon account khac,
-   dang xuat claude.ai truoc hoac mo URL trong cua so rieng tu.
+4. Account dang dang nhap duoc tu luu (ten = phan truoc @ cua email; doi ten trong menu ... > Doi ten).
+   Them account thu hai: "Them account..." -> ten, email -> trang dang nhap mo trong CUA SO RIENG TU
+   cua trinh duyet -> dang nhap account moi -> Authorize -> app tu nhan, khong can Terminal.
+   (Trinh duyet dang giu phien claude.ai cua account nao thi OAuth tu duyet account do, nen can rieng tu.)
 
 Yeu cau: macOS 14+, Intel hoac Apple Silicon; Claude Code da dang nhap claude.ai (Pro/Max/Team).
 Khong can cai them gi khac.

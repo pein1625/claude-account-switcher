@@ -18,6 +18,18 @@ public struct Switcher {
         !n.isEmpty && n.range(of: "^[A-Za-z0-9._@-]+$", options: .regularExpression) != nil
     }
 
+    /// `miracle04@x.com` -> `miracle04`; invalid characters become `-`; `-2`, `-3`... on collision.
+    public static func suggestName(email: String?, taken: [String]) -> String {
+        var base = (email ?? "account").split(separator: "@", omittingEmptySubsequences: false).first.map(String.init) ?? "account"
+        base = String(base.lowercased().map { "abcdefghijklmnopqrstuvwxyz0123456789._-".contains($0) ? $0 : "-" })
+        base = base.trimmingCharacters(in: CharacterSet(charactersIn: ".-_"))
+        if base.isEmpty { base = "account" }
+        var name = base
+        var n = 2
+        while taken.contains(name) { name = "\(base)-\(n)"; n += 1 }
+        return name
+    }
+
     static func validate(_ n: String) throws {
         guard isValidName(n) else { throw SwitcherError("invalid name '\(n)' (allowed: letters, digits, . _ @ -)") }
     }

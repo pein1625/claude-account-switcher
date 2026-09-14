@@ -36,6 +36,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            if let st = model.login { LoginPanel(state: st) }
             if !model.setup.complete { setupBanner }
             if model.profiles.isEmpty {
                 Text("Chưa có account nào được lưu. Bấm “Lưu login hiện tại” để bắt đầu.")
@@ -199,7 +200,7 @@ struct MenuBarView: View {
             .controlSize(.small)
             if showAdd {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Mở Terminal chạy `claude-switcher login <tên>`: đăng nhập account KHÁC trong config dir tạm, login hiện tại không bị đụng.")
+                    Text("Đăng nhập account KHÁC ngay trong app: trang OAuth mở trong cửa sổ riêng tư của trình duyệt (để không lấy nhầm account đang đăng nhập claude.ai). Login hiện tại không bị đụng.")
                         .font(.caption2).foregroundStyle(.secondary)
                     HStack {
                         TextField("tên (vd m07)", text: $newName).textFieldStyle(.roundedBorder)
@@ -331,6 +332,9 @@ struct SettingsView: View {
     @AppStorage(AppSettings.Key.terminalApp.rawValue) private var terminalApp = "Terminal"
     @AppStorage(AppSettings.Key.restartSessions.rawValue) private var restartSessions = true
     @AppStorage(AppSettings.Key.cooldownMinutes.rawValue) private var cooldown = 10
+    @AppStorage(AppSettings.Key.autoSaveLogin.rawValue) private var autoSaveLogin = true
+    @AppStorage(AppSettings.Key.loginPrivateWindow.rawValue) private var loginPrivateWindow = true
+    @AppStorage(AppSettings.Key.loginViaTerminal.rawValue) private var loginViaTerminal = false
     @State private var extraPath = AppSettings.defaults.string(forKey: AppSettings.Key.extraPath.rawValue) ?? ""
     @State private var confirmUninstall = false
 
@@ -357,8 +361,13 @@ struct SettingsView: View {
             Toggle("Lên lịch restart --continue cho session của account cũ (cần hook)", isOn: $restartSessions)
             Toggle("Thông báo macOS", isOn: $notify)
             Toggle("Chạy khi đăng nhập máy", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-            Picker("Terminal cho đăng nhập", selection: $terminalApp) {
-                Text("Terminal").tag("Terminal"); Text("iTerm").tag("iTerm")
+            Toggle("Tự lưu login mới xuất hiện (sau /login hay `claude auth login`)", isOn: $autoSaveLogin)
+            Toggle("Đăng nhập mở trang OAuth trong cửa sổ riêng tư", isOn: $loginPrivateWindow)
+            Toggle("Đăng nhập qua Terminal thay vì trong app (khắc phục sự cố)", isOn: $loginViaTerminal)
+            if loginViaTerminal {
+                Picker("Terminal cho đăng nhập", selection: $terminalApp) {
+                    Text("Terminal").tag("Terminal"); Text("iTerm").tag("iTerm")
+                }
             }
             Text("Đo bằng token OAuth sẵn trong Keychain (chỉ đọc, không refresh). Account không live: token hết hạn sau vài giờ → dùng số .quota đã ghi, cửa sổ đã reset tính 0% (giống `claude-account next`).")
                 .font(.caption).foregroundStyle(.secondary)
@@ -457,5 +466,79 @@ struct SettingsView: View {
             }
         }
         .task { if model.doctorItems.isEmpty { await model.runDoctor() } }
+    }
+}
+
+
+struct LoginPanel: View {
+    @EnvironmentObject var model: AppModel
+    let state: LoginState
+    @State private var code = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: icon).foregroundStyle(color)
+                Text("Đăng nhập '\(state.name)'\(state.email.map { " · \($0)" } ?? "")").font(.callout.weight(.semibold))
+                Spacer()
+                if state.phase.isTerminal {
+                    Button("Đóng") { model.loginDismiss() }.controlSize(.small)
+                } else {
+                    Button("Huỷ") { model.loginCancel() }.controlSize(.small)
+                }
+            }
+            Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            switch state.phase {
+            case .waitingBrowser, .needCode:
+                HStack(spacing: 6) {
+                    Button("Mở lại (riêng tư)") { model.loginReopen(privateWindow: true) }
+                    Button("Mở lại (thường)") { model.loginReopen(privateWindow: false) }
+                    if let url = state.url {
+                        Button("Copy link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string) }
+                    }
+                }.controlSize(.small)
+                HStack(spacing: 6) {
+                    TextField("Trình duyệt hiện code? dán vào đây", text: $code).textFieldStyle(.roundedBorder)
+                        .onSubmit { model.loginSubmitCode(code); code = "" }
+                    Button("Gửi") { model.loginSubmitCode(code); code = "" }.disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
+                }.controlSize(.small)
+            case .failed(let why) where why.contains("already saved"):
+                Button("Thử lại trong cửa sổ riêng tư") {
+                    model.loginDismiss()
+                    Task { await model.addAccount(name: state.name, email: state.email ?? "") }
+                }.controlSize(.small)
+            default: EmptyView()
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)))
+    }
+
+    private var icon: String {
+        switch state.phase {
+        case .starting, .waitingBrowser, .needCode, .finishing: return "person.badge.key"
+        case .done: return "checkmark.circle.fill"
+        case .failed: return "xmark.octagon.fill"
+        }
+    }
+
+    private var color: Color {
+        switch state.phase {
+        case .done: return .green
+        case .failed: return .red
+        default: return .blue
+        }
+    }
+
+    private var message: String {
+        switch state.phase {
+        case .starting: return "Đang khởi động claude auth login…"
+        case .waitingBrowser:
+            return "Trang đăng nhập Claude đã mở trong \(state.openedIn ?? "trình duyệt"). Đăng nhập bằng account MỚI rồi bấm Authorize; app tự nhận kết quả. Trình duyệt đang giữ phiên claude.ai của account khác → đăng xuất hoặc dùng cửa sổ riêng tư."
+        case .needCode: return "Trang đăng nhập đã mở trong \(state.openedIn ?? "trình duyệt"). Sau khi Authorize, trang sẽ hiện một đoạn code — dán vào ô dưới."
+        case .finishing: return "Đã nhận đăng nhập, đang snapshot…"
+        case .done(let msg): return msg
+        case .failed(let why): return why
+        }
     }
 }

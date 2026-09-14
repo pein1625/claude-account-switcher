@@ -6,7 +6,8 @@ struct AppSettings {
     static let defaults = UserDefaults.standard
 
     enum Key: String {
-        case autoSwitch, hopAt, sevenDayAt, pollSeconds, notify, terminalApp, restartSessions, extraPath, cooldownMinutes
+        case autoSwitch, hopAt, sevenDayAt, pollSeconds, notify, terminalApp, restartSessions, extraPath, cooldownMinutes,
+             autoSaveLogin, loginPrivateWindow, loginViaTerminal
     }
 
     static func register() {
@@ -20,6 +21,9 @@ struct AppSettings {
             Key.restartSessions.rawValue: true,
             Key.extraPath.rawValue: "",
             Key.cooldownMinutes.rawValue: 10,
+            Key.autoSaveLogin.rawValue: true,
+            Key.loginPrivateWindow.rawValue: true,
+            Key.loginViaTerminal.rawValue: false,
         ])
         Environment.extraPath = defaults.string(forKey: Key.extraPath.rawValue) ?? ""
     }
@@ -33,4 +37,7 @@ struct AppSettings {
     static var restartSessions: Bool { defaults.bool(forKey: Key.restartSessions.rawValue) }
     static var cooldown: TimeInterval { TimeInterval(defaults.integer(forKey: Key.cooldownMinutes.rawValue) * 60) }
     static var thresholds: Thresholds { Thresholds(hopAt: hopAt, sevenDayAt: sevenDayAt) }
+    static var autoSaveLogin: Bool { defaults.bool(forKey: Key.autoSaveLogin.rawValue) }
+    static var loginPrivateWindow: Bool { defaults.bool(forKey: Key.loginPrivateWindow.rawValue) }
+    static var loginViaTerminal: Bool { defaults.bool(forKey: Key.loginViaTerminal.rawValue) }
 }

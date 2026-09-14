@@ -4,6 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ClaudeSwitcher",
     platforms: [.macOS(.v14)],
+    products: [.library(name: "ClaudeSwitcherCore", targets: ["ClaudeSwitcherCore"])],
     targets: [
         .target(name: "ClaudeSwitcherCore", path: "Sources/ClaudeSwitcherCore"),
         .executableTarget(

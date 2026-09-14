@@ -195,6 +195,11 @@ do {
     let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
     equal(try? dec.decode(RestartPlan.self, from: try enc.encode(plan)), plan, "plan round trip")
     check(Switcher.isValidName("m07") && Switcher.isValidName("a.b_c@d-e") && !Switcher.isValidName("bad name") && !Switcher.isValidName(""), "name validation")
+    equal(Switcher.suggestName(email: "Miracle04@dlsinc.com", taken: []), "miracle04")
+    equal(Switcher.suggestName(email: "miracle04@dlsinc.com", taken: ["miracle04", "miracle04-2"]), "miracle04-3")
+    equal(Switcher.suggestName(email: "a+b@x.io", taken: []), "a-b")
+    equal(Switcher.suggestName(email: nil, taken: []), "account")
+    equal(Switcher.suggestName(email: "@x.io", taken: []), "account")
 }
 
 print("\(total - failed)/\(total) checks passed")
