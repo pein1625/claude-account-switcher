@@ -55,6 +55,10 @@ enum HookRunner {
             chain.append(p)
             p = parent[p] ?? 0
         }
+        if env["CLAUDE_SWITCHER_DEBUG"] != nil {
+            let desc = chain.map { "\($0):\(comm[$0] ?? "?")" }.joined(separator: " <- ")
+            FileHandle.standardError.write(Data("hook: ppid \(getppid()) chain \(desc) CLAUDE_PID=\(env["CLAUDE_PID"] ?? "-")\n".utf8))
+        }
         if let s = env["CLAUDE_PID"], let cp = Int32(s), chain.contains(cp) { return cp }
         return chain.first { (comm[$0].map { ($0 as NSString).lastPathComponent } ?? "") == "claude" }
     }

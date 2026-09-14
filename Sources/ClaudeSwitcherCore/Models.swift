@@ -178,6 +178,14 @@ public struct RestartPlan: Codable, Equatable {
     public init(to: String, created: Date, pids: [String: String]) {
         self.to = to; self.created = created; self.pids = pids
     }
+
+    /// A damaged `created` must not disable the hook: only `pids` carries meaning.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        to = try c.decode(String.self, forKey: .to)
+        pids = try c.decode([String: String].self, forKey: .pids)
+        created = (try? c.decode(Date.self, forKey: .created)) ?? Date()
+    }
 }
 
 public struct RateLimitEvent: Equatable {
