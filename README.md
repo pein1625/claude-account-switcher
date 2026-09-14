@@ -153,7 +153,7 @@ gắn theo máy.
 ## Gỡ cài đặt
 
 ⚙ › **Gỡ cài đặt** trong app · `claude-switcher uninstall --dry-run` (xem) rồi bỏ `--dry-run` ·
-`bash "/Volumes/Claude Switcher <ver>/Uninstall.command"` từ dmg · `make uninstall` trong repo.
+`bash "/Volumes/Claude Switcher/Uninstall.command"` từ dmg · `make uninstall` trong repo.
 
 Gỡ: hook trong `settings.json`, shim, block `claude-as` (chỉ khi là của app), Login Item,
 `~/.claude/accounts/.switcher/`, preferences, app → Thùng rác. **Không đụng** snapshot Keychain, `<name>.json`,

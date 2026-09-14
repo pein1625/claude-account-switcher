@@ -5,3 +5,4 @@ build/
 .swiftpm/
 dist/
 .build-x86_64/
+.venv-dmg/

@@ -3,7 +3,7 @@
 # claude-as block in the shell rc, its files under ~/.claude/accounts/.switcher, preferences and login item.
 # The account store (snapshots, profiles, .quota, live login) is left untouched.
 #
-# From a downloaded .dmg run it as:  bash "/Volumes/Claude Switcher <version>/Uninstall.command"
+# From a downloaded .dmg run it as:  bash "/Volumes/Claude Switcher/Uninstall.command"
 # (double-clicking a quarantined .command is blocked by Gatekeeper the same way the app is).
 set -u
 APP="/Applications/ClaudeSwitcher.app"

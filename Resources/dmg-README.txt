@@ -1,5 +1,9 @@
 CLAUDE SWITCHER - cai dat / installation
 
+Cach nhanh nhat, khong bi Gatekeeper hoi (tai bang curl thay cho trinh duyet):
+    curl -fsSL https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/scripts/install.sh | bash
+Con dung file dmg nay thi:
+
 1. Keo ClaudeSwitcher.app vao thu muc Applications (bieu tuong ben canh).
 
 2. Mo app lan dau. macOS se chan vi app chua notarize (ky adhoc):
@@ -24,6 +28,6 @@ Khong can cai them gi khac.
 Token gan theo may: KHONG copy ~/.claude/accounts hay Keychain tu may khac sang.
 
 Go cai dat:  mo app > (gear) > "Go cai dat", hoac trong Terminal:
-    bash "/Volumes/Claude Switcher 0.2.1/Uninstall.command"
+    bash "/Volumes/Claude Switcher/Uninstall.command"
 Go: app, hook, shim, block claude-as, ~/.claude/accounts/.switcher, preferences, login item.
 KHONG dung den snapshot account hay login hien tai.

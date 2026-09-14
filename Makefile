@@ -7,7 +7,7 @@ VERSION  = $(shell sed -n 's/.*static let version = "\(.*\)".*/\1/p' Sources/Cla
 DIST     = dist/$(APP)-$(VERSION).zip
 DMG      = dist/$(APP)-$(VERSION).dmg
 
-.PHONY: all build test app icon install run status doctor clean universal dist dmg uninstall release publish-file
+.PHONY: all build test app icon install run status doctor clean universal dist dmg dmg-plain uninstall release publish-file
 
 all: app
 
@@ -59,10 +59,35 @@ dist: universal
 	shasum -a 256 "$(DIST)" | tee "$(DIST).sha256"
 	@echo "dist   $(DIST)"
 
-# Drag-to-Applications disk image. Same Gatekeeper caveat as the zip: without Developer ID + notarization the
-# recipient allows the app once (Privacy & Security > Open Anyway). The image carries the instructions.
-dmg: universal
+# Drag-to-Applications disk image with background + icon layout (dmgbuild writes the .DS_Store; no Finder
+# scripting). dmgbuild lives in a repo-local venv created on first use. Same Gatekeeper caveat as the zip:
+# without Developer ID + notarization the recipient allows the app once (Privacy & Security > Open Anyway).
+DMGBUILD = .venv-dmg/bin/dmgbuild
+
+$(DMGBUILD):
+	python3 -m venv .venv-dmg
+	.venv-dmg/bin/pip install --quiet dmgbuild
+
+build/dmg-bg.tiff: scripts/make-dmg-bg.swift
+	mkdir -p build
+	swift scripts/make-dmg-bg.swift build/dmg-bg
+	tiffutil -cathidpicheck build/dmg-bg.png build/dmg-bg@2x.png -out $@
+
+dmg: universal $(DMGBUILD) build/dmg-bg.tiff
 	-hdiutil info | grep -o '/Volumes/Claude Switcher[^\t]*' | while read -r v; do hdiutil detach "$$v" -quiet; done
+	rm -rf dist/dmg "$(DMG)"
+	mkdir -p dist/dmg
+	cp -R "$(APP_DIR)" dist/dmg/
+	cp Resources/dmg-README.txt "dist/dmg/DOC TRUOC KHI MO - README.txt"
+	cp scripts/uninstall.sh dist/dmg/Uninstall.command
+	chmod +x dist/dmg/Uninstall.command
+	$(DMGBUILD) -s scripts/dmg-settings.py -D stage=dist/dmg -D background=build/dmg-bg.tiff -D icon=build/AppIcon.icns "Claude Switcher" "$(DMG)"
+	rm -rf dist/dmg
+	shasum -a 256 "$(DMG)" | tee "$(DMG).sha256"
+	@echo "dmg    $(DMG)"
+
+# Plain image without layout (no Python needed).
+dmg-plain: universal
 	rm -rf dist/dmg "$(DMG)"
 	mkdir -p dist/dmg
 	cp -R "$(APP_DIR)" dist/dmg/
@@ -70,10 +95,9 @@ dmg: universal
 	cp Resources/dmg-README.txt "dist/dmg/DOC TRUOC KHI MO - README.txt"
 	cp scripts/uninstall.sh dist/dmg/Uninstall.command
 	chmod +x dist/dmg/Uninstall.command
-	hdiutil create -quiet -volname "Claude Switcher $(VERSION)" -srcfolder dist/dmg -ov -format UDZO "$(DMG)"
+	hdiutil create -quiet -volname "Claude Switcher" -srcfolder dist/dmg -ov -format UDZO "$(DMG)"
 	rm -rf dist/dmg
 	shasum -a 256 "$(DMG)" | tee "$(DMG).sha256"
-	@echo "dmg    $(DMG)"
 
 uninstall:
 	bash scripts/uninstall.sh
@@ -92,3 +116,6 @@ release: dmg
 
 clean:
 	rm -rf .build .build-x86_64 build dist
+
+distclean: clean
+	rm -rf .venv-dmg
