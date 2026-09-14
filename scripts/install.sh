@@ -22,8 +22,13 @@ if [ "$VERSION" = latest ]; then
 else
   api="https://api.github.com/repos/$REPO/releases/tags/v$VERSION"
 fi
-url=$(curl -fsSL "$api" | grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | sed -E 's/.*"(https[^"]*)"$/\1/')
-[ -n "$url" ] || { echo "no .dmg asset found at $api" >&2; exit 1; }
+if ! json=$(curl -fsSL "$api" 2>/dev/null); then
+  echo "no release found for $REPO ($VERSION). The maintainer has to publish one first:" >&2
+  echo "  https://github.com/$REPO/releases/new   (tag v<version>, attach ClaudeSwitcher-<version>.dmg)" >&2
+  exit 1
+fi
+url=$(printf '%s' "$json" | grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | sed -E 's/.*"(https[^"]*)"$/\1/')
+[ -n "$url" ] || { echo "release found but it has no .dmg asset: $api" >&2; exit 1; }
 
 tmp=$(mktemp -d)
 mnt=""
