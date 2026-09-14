@@ -7,7 +7,7 @@ VERSION  = $(shell sed -n 's/.*static let version = "\(.*\)".*/\1/p' Sources/Cla
 DIST     = dist/$(APP)-$(VERSION).zip
 DMG      = dist/$(APP)-$(VERSION).dmg
 
-.PHONY: all build test app icon install run status doctor clean universal dist dmg uninstall release
+.PHONY: all build test app icon install run status doctor clean universal dist dmg uninstall release publish-file
 
 all: app
 
@@ -77,6 +77,13 @@ dmg: universal
 
 uninstall:
 	bash scripts/uninstall.sh
+
+# Copy the dmg into releases/ (tracked): scripts/install.sh falls back to this when no GitHub Release exists.
+publish-file: dmg
+	mkdir -p releases
+	cp "$(DMG)" "$(DMG).sha256" releases/
+	printf '%s\n' "$(VERSION)" > releases/latest
+	@echo "now: git add releases && git commit -m 'Release $(VERSION) dmg' && git push"
 
 # Publish a GitHub release with the dmg; scripts/install.sh downloads from here.
 release: dmg

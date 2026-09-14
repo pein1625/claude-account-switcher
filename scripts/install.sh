@@ -22,13 +22,18 @@ if [ "$VERSION" = latest ]; then
 else
   api="https://api.github.com/repos/$REPO/releases/tags/v$VERSION"
 fi
-if ! json=$(curl -fsSL "$api" 2>/dev/null); then
-  echo "no release found for $REPO ($VERSION). The maintainer has to publish one first:" >&2
-  echo "  https://github.com/$REPO/releases/new   (tag v<version>, attach ClaudeSwitcher-<version>.dmg)" >&2
-  exit 1
+url=""
+if json=$(curl -fsSL "$api" 2>/dev/null); then
+  url=$(printf '%s' "$json" | grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | sed -E 's/.*"(https[^"]*)"$/\1/')
 fi
-url=$(printf '%s' "$json" | grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | sed -E 's/.*"(https[^"]*)"$/\1/')
-[ -n "$url" ] || { echo "release found but it has no .dmg asset: $api" >&2; exit 1; }
+if [ -z "$url" ]; then
+  # no GitHub Release (yet): the dmg is also committed under releases/ in the repo
+  raw="https://raw.githubusercontent.com/$REPO/main/releases"
+  ver="$VERSION"
+  [ "$ver" = latest ] && ver=$(curl -fsSL "$raw/latest" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$ver" ] || { echo "cannot find a build to download for $REPO (no release, no releases/latest)" >&2; exit 1; }
+  url="$raw/ClaudeSwitcher-$ver.dmg"
+fi
 
 tmp=$(mktemp -d)
 mnt=""

@@ -29,8 +29,16 @@ Standalone: một `.app`, không cần plugin hay công cụ nào khác ngoài C
 curl -fsSL https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/scripts/install.sh | bash
 ```
 
-Tải dmg mới nhất từ GitHub Releases bằng `curl`, copy app vào `/Applications`, mở. Không có prompt Gatekeeper:
-Gatekeeper chỉ chặn file mang cờ quarantine, mà chỉ trình duyệt / AirDrop / Slack mới gắn cờ đó, `curl` thì không.
+Tải dmg mới nhất (GitHub Releases, không có thì file trong `releases/` của repo) bằng `curl`, copy app vào
+`/Applications`, mở. Không có prompt Gatekeeper: Gatekeeper chỉ chặn file mang cờ quarantine, mà chỉ trình duyệt /
+AirDrop / Slack mới gắn cờ đó, `curl` thì không.
+
+**Tự tải file về rồi chạy** (cũng không prompt, vì vẫn là `curl`):
+
+```bash
+curl -fL -o ~/Downloads/ClaudeSwitcher.dmg https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.2.0.dmg
+open ~/Downloads/ClaudeSwitcher.dmg        # kéo app vào Applications, mở
+```
 
 **Từ file dmg gửi tay:** mở `ClaudeSwitcher-<version>.dmg`, kéo app vào Applications, mở. App ký adhoc (không
 notarize) nên macOS chặn lần đầu — *"Apple could not verify… free of malware"* → **System Settings › Privacy &
@@ -137,8 +145,8 @@ make dmg      # → dist/ClaudeSwitcher-<version>.dmg (universal arm64 + x86_64)
 make dist     # → .zip
 ```
 
-`make release` đẩy dmg lên GitHub Releases (`gh`); từ đó người nhận chỉ cần lệnh `curl … | bash` ở mục **Cài**,
-không gặp Gatekeeper. Gửi dmg tay thì họ phải Open Anyway một lần; bỏ hẳn bước đó chỉ có Apple Developer ID +
+`make publish-file` copy dmg vào `releases/` (commit + push) — người nhận dùng lệnh `curl … | bash` hoặc tải file
+ở mục **Cài**, không gặp Gatekeeper. `make release` đẩy lên GitHub Releases (cần `gh`), script ưu tiên nguồn này. Gửi dmg tay thì họ phải Open Anyway một lần; bỏ hẳn bước đó chỉ có Apple Developer ID +
 notarize (`xcrun notarytool`, cần Xcode). Không copy `~/.claude/accounts/` hay Keychain sang máy khác: token
 gắn theo máy.
 
