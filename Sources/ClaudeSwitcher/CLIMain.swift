@@ -199,6 +199,10 @@ enum CLIMain {
         if let plan = store.readRestartPlan() { print("restart plan: \(plan.pids)") }
         if let hop = store.readHop() { print(".hop: \(hop)") }
         let setup = SetupStatus.current(appBinary: appBinary)
-        print("setup: shim \(setup.shim), hook \(setup.hookWired ? "wired" : "not wired"), rc \(setup.rc)")
+        let shimDesc: String
+        if let target = ShellInstaller.shimTarget() {
+            shimDesc = FileManager.default.isExecutableFile(atPath: target) ? "-> \(target)" : "-> \(target) (MISSING)"
+        } else { shimDesc = "missing" }
+        print("setup: shim \(shimDesc), hook \(setup.hookWired ? "wired" : "not wired"), rc \(setup.rc)")
     }
 }

@@ -39,6 +39,16 @@ public enum ShellInstaller {
 
     public static func removeShim() { try? FileManager.default.removeItem(at: Paths.shim) }
 
+    /// The app binary an installed shim execs, if any.
+    public static func shimTarget() -> String? {
+        guard let s = try? String(contentsOf: Paths.shim, encoding: .utf8),
+              let line = s.split(separator: "\n").first(where: { $0.hasPrefix("APP=") }) else { return nil }
+        let quoted = String(line.dropFirst(4))
+        return quoted.hasPrefix("'") && quoted.hasSuffix("'") && quoted.count >= 2
+            ? String(quoted.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+            : quoted
+    }
+
     // MARK: rc block
 
     public static func rcFile() -> URL {

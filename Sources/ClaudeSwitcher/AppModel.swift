@@ -56,6 +56,10 @@ final class AppModel: ObservableObject {
     private var lastDriftCheck: Date = .distantPast
     private var lastNotifiedExhausted: Date = .distantPast
     private var switchInFlight = false
+    /// An external `use` (claude-as loop, CLI) strands the old account's sessions just like an app switch
+    /// does; plan their restarts once the switch has held for the settle window (the quota-ping cron flips
+    /// accounts for a few seconds and must not trigger a mass restart).
+    private var pendingExternalPlan: (from: String, to: String, at: Date)?
     private var tasks: [Task<Void, Never>] = []
     private var pollInterval: Int = AppSettings.pollSeconds
 
@@ -173,6 +177,7 @@ final class AppModel: ObservableObject {
         if now.timeIntervalSince(lastAlive) > 30 { store.touchAlive(now: now); lastAlive = now }
         reloadProfiles()
         detectExternalSwitch(now: now)
+        settleExternalPlan(now: now)
         prunePlan()
         ingestEvents(now: now)
         pollInterval = AppSettings.pollSeconds
@@ -191,7 +196,19 @@ final class AppModel: ObservableObject {
             store.log("external switch \(prev.name) -> \(m.name)")
             lastSwitchAt = m.mtime ?? now
             retargetPlan()
+            pendingExternalPlan = AppSettings.restartSessions ? (from: prev.name, to: m.name, at: now) : nil
         }
+    }
+
+    private func settleExternalPlan(now: Date) {
+        guard let p = pendingExternalPlan else { return }
+        guard liveName == p.to else { pendingExternalPlan = nil; return }
+        guard now.timeIntervalSince(p.at) >= 30 else { return }
+        pendingExternalPlan = nil
+        let moving = sessions.filter { $0.account.name == p.from || $0.account == .unknown }
+        guard !moving.isEmpty else { return }
+        planRestarts(for: moving, to: p.to)
+        Notifier.post("Account đã đổi sang \(p.to)", "\(moving.count) session của \(p.from) sẽ restart --continue ở cuối turn.")
     }
 
     private func prunePlan() {
