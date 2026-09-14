@@ -37,6 +37,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            if !model.setup.complete { setupBanner }
             if model.profiles.isEmpty {
                 Text("Chưa có account nào được lưu. Bấm “Lưu login hiện tại” để bắt đầu.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -90,6 +91,20 @@ struct MenuBarView: View {
             Button { Task { await model.pollUsage(force: true); await model.scanSessions() } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless).help("Đo lại quota + quét session")
         }
+    }
+
+    private var setupBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "bolt.badge.clock").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Hop tự động chưa sẵn sàng: thiếu \(model.setup.missing.joined(separator: ", ")).")
+                    .font(.caption)
+                Button("Cài (shim + hook + claude-as, có backup)") { Task { await model.installAll() } }
+                    .controlSize(.small).disabled(model.busy)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
     }
 
     private var policyRow: some View {
@@ -161,8 +176,8 @@ struct MenuBarView: View {
                         }
                     }
                 }
-                if !model.hookInstalled {
-                    Text("Hook chưa cài → session cũ không tự restart theo pid. Cài trong Cài đặt › Hook.")
+                if !model.setup.hookWired {
+                    Text("Hook chưa cài → session không tự restart khi hop. Bấm Cài ở banner trên hoặc Cài đặt › Shell.")
                         .font(.caption2).foregroundStyle(.orange)
                 }
             }
@@ -195,7 +210,7 @@ struct MenuBarView: View {
             .controlSize(.small)
             if showAdd {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Mở Terminal chạy `claude-account login <tên>`: đăng nhập account KHÁC trong config dir tạm, login hiện tại không bị đụng.")
+                    Text("Mở Terminal chạy `claude-switcher login <tên>`: đăng nhập account KHÁC trong config dir tạm, login hiện tại không bị đụng.")
                         .font(.caption2).foregroundStyle(.secondary)
                     HStack {
                         TextField("tên (vd m07)", text: $newName).textFieldStyle(.roundedBorder)
@@ -302,7 +317,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             general.tabItem { Label("Chung", systemImage: "slider.horizontal.3") }
-            hooks.tabItem { Label("Hook & CLI", systemImage: "terminal") }
+            shell.tabItem { Label("Shell", systemImage: "terminal") }
             doctor.tabItem { Label("Doctor", systemImage: "stethoscope") }
             uninstall.tabItem { Label("Gỡ cài đặt", systemImage: "trash") }
         }
@@ -352,43 +367,46 @@ struct SettingsView: View {
         }
     }
 
-    private var hooks: some View {
+    private var shell: some View {
         Form {
-            Section("Hook restart theo pid") {
+            Section("Hop tự động cần 3 thứ trên máy") {
+                statusRow(model.setup.shim == .current, model.setup.shim == .current ? "Shim \(Paths.shim.path) → app" : model.setup.shim == .stale ? "Shim trỏ sai chỗ (app đã chuyển) → Cài lại" : "Chưa có shim \(Paths.shim.path)")
+                statusRow(model.setup.hookWired, model.setup.hookWired ? "Hook Stop/StopFailure trong ~/.claude/settings.json" : "Hook chưa có trong ~/.claude/settings.json")
+                statusRow(model.setup.rc != .missing, model.setup.rc == .ours ? "claude-as + alias claude trong \(ShellInstaller.rcFile().path)" : model.setup.rc == .plugin ? "claude-as của plugin claude-account trong \(ShellInstaller.rcFile().lastPathComponent) (dùng được)" : "Chưa có claude-as trong \(ShellInstaller.rcFile().path)")
                 HStack {
-                    Image(systemName: model.hookInstalled ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(model.hookInstalled ? .green : .orange)
-                    Text(model.hookInstalled ? "Đã cài: ~/.local/bin/claude-switcher-hook + Stop/StopFailure trong ~/.claude/settings.json" : "Chưa cài")
-                        .font(.callout)
+                    Button(model.setup.complete ? "Cài lại" : "Cài tất cả") { Task { await model.installAll() } }.disabled(model.busy)
+                    Button("Gỡ tích hợp shell") { Task { await model.removeShellIntegration() } }.disabled(model.busy)
                 }
-                Text("Khi hop, app ghi pid các session của account cũ vào .switcher/restart.json. Hook chạy ở cuối mỗi turn, chỉ kết thúc đúng pid đó (claude-as mở lại với --continue). Session của account mới không bị đụng — khác cờ .hop toàn cục của plugin. Session đang chạy chỉ nhận hook sau khi restart; StopFailure(rate_limit) báo cho app ngay để hop tức thì. Có backup settings.json.bak-*.")
+                Text("`claude` được alias sang claude-as: vòng lặp mở claude, và khi hook của app kết thúc session ở cuối turn (pid nằm trong .switcher/restart.json), vòng lặp đổi account rồi chạy `claude --continue`. Session của account mới không bị đụng. Session đang chạy chỉ nhận hook sau khi restart. Mọi file sửa đều có backup .bak-*.")
                     .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(model.hookInstalled ? "Cài lại" : "Cài hook") { Task { await model.installHook() } }
-                    if model.hookInstalled { Button("Gỡ hook") { Task { await model.uninstallHook() } } }
-                }
             }
-            Section("CLI claude-account") {
-                Text(model.cli.map { "Dùng: \($0.path)" } ?? "Không tìm thấy — chạy /claude-account:claude-account install trong Claude Code")
-                    .font(.callout).foregroundStyle(model.cli == nil ? .red : .primary)
+            Section("Tìm `claude`") {
                 TextField("PATH thêm (vd /opt/homebrew/bin:/Users/x/.nvm/versions/node/v24/bin)", text: $extraPath)
                     .onSubmit { model.setExtraPath(extraPath) }
-                Text("App tự thêm ~/.local/bin, Homebrew và nvm mới nhất vào PATH khi gọi CLI.").font(.caption).foregroundStyle(.secondary)
+                Text("Đăng nhập account mới chạy `claude auth login`; app tự thêm ~/.local/bin, Homebrew và nvm mới nhất vào PATH.").font(.caption).foregroundStyle(.secondary)
             }
-            Section("Plugin claude-account (tuỳ chọn)") {
-                Text("Patch trong repo app: integration/claude-account-plugin.patch — `quota` của statusline nhường quyền ghi .quota/.hop cho app khi app đang chạy (tránh nhiễm số giữa các session). Không bắt buộc với 2 account.")
+            Section("CLI") {
+                Text("`claude-switcher list | current | save | use | login | remove | rename | next | status | doctor | install | uninstall` — cùng thao tác như menu, dùng được trong script.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
     }
 
+    private func statusRow(_ ok: Bool, _ text: String) -> some View {
+        HStack {
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(ok ? .green : .orange)
+            Text(text).font(.callout).textSelection(.enabled)
+        }
+    }
+
     private var uninstall: some View {
         Form {
             Section("Gỡ Claude Switcher") {
-                Text("Xoá: hook Stop/StopFailure trong ~/.claude/settings.json (có backup) + ~/.local/bin/claude-switcher-hook, mục “Chạy khi đăng nhập máy”, thư mục ~/.claude/accounts/.switcher/, preferences, và chính app (vào Thùng rác). App thoát sau khi gỡ.")
+                Text("Xoá: hook Stop/StopFailure trong ~/.claude/settings.json (có backup), shim ~/.local/bin/claude-switcher, block claude-as + alias trong shell rc (nếu là của app), mục “Chạy khi đăng nhập máy”, thư mục ~/.claude/accounts/.switcher/, preferences, và chính app (vào Thùng rác). App thoát sau khi gỡ.")
                     .font(.callout)
                 Text(Uninstaller.keeps).font(.caption).foregroundStyle(.secondary)
-                Text("Không GUI: `ClaudeSwitcher --uninstall --dry-run` xem trước, bỏ `--dry-run` để gỡ; hoặc Uninstall.command trong file .dmg.")
+                Text("Không GUI: `claude-switcher uninstall --dry-run` xem trước, bỏ `--dry-run` để gỡ; hoặc Uninstall.command trong file .dmg.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Gỡ cài đặt…", role: .destructive) { confirmUninstall = true }
                     .disabled(model.busy)

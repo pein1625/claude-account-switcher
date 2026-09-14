@@ -23,12 +23,14 @@ public enum Environment {
     public static var path: String {
         var dirs: [String] = []
         func add(_ d: String) { if !d.isEmpty, !dirs.contains(d) { dirs.append(d) } }
+        // Order matters for `claude`: the native installer (~/.local/bin) and nvm's global install are the
+        // ones people keep current; a Homebrew copy is often a stale leftover, so it comes last.
         extraPath.split(separator: ":").forEach { add(String($0)) }
         add(Paths.localBin.path)
-        add("/opt/homebrew/bin")
-        add("/usr/local/bin")
         nvmBinDirs().forEach(add)
         (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").forEach { add(String($0)) }
+        add("/opt/homebrew/bin")
+        add("/usr/local/bin")
         ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].forEach(add)
         return dirs.joined(separator: ":")
     }

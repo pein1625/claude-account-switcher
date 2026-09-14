@@ -1,19 +1,14 @@
 import Foundation
 
 /// `claude auth login` needs a real terminal (browser round-trip, paste-code fallback), so adding an account
-/// opens a Terminal window running `claude-account login <name>`; the live login stays untouched (the CLI
-/// signs in inside a scratch config dir and only snapshots the result).
+/// opens a Terminal window running `claude-switcher login <name>`; the live login stays untouched.
 public enum LoginLauncher {
-    public static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
     public static func loginScript(cli: String, name: String, email: String?) -> String {
-        var cmd = "\(shellQuote(cli)) login \(shellQuote(name))"
-        if let email, !email.isEmpty { cmd += " --email \(shellQuote(email))" }
+        var cmd = "\(ShellInstaller.shellQuote(cli)) login \(ShellInstaller.shellQuote(name))"
+        if let email, !email.isEmpty { cmd += " --email \(ShellInstaller.shellQuote(email))" }
         return """
         #!/bin/bash
-        export PATH=\(shellQuote(Environment.path))
+        export PATH=\(ShellInstaller.shellQuote(Environment.path))
         echo "Claude Switcher: đăng nhập account '\(name)' (trình duyệt sẽ mở; login hiện tại không bị đụng)"
         echo
         \(cmd)

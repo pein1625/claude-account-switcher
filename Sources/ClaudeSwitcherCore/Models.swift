@@ -143,20 +143,29 @@ public enum Attribution: Equatable {
     public var isAssumed: Bool { if case .assumed = self { return true } else { return false } }
 }
 
+/// What the `claude-as` wrapper exported into a session's environment: `CLAUDE_AS_LOOP=1` (any wrapper) and
+/// `CLAUDE_AS_ID` (this app's wrapper; lets the hook hand the relaunch target to exactly that loop).
+public struct LoopInfo: Equatable {
+    public var isLoop: Bool
+    public var id: String?
+    public init(isLoop: Bool, id: String?) { self.isLoop = isLoop; self.id = id }
+}
+
 public struct Session: Identifiable, Equatable {
     public var pid: Int32
     public var ppid: Int32
     public var startedAt: Date
     public var command: String
     public var isLoop: Bool
+    public var loopID: String?
     public var cwd: String?
     public var account: Attribution
 
     public var id: Int32 { pid }
 
-    public init(pid: Int32, ppid: Int32, startedAt: Date, command: String, isLoop: Bool, cwd: String?, account: Attribution) {
+    public init(pid: Int32, ppid: Int32, startedAt: Date, command: String, isLoop: Bool, loopID: String? = nil, cwd: String?, account: Attribution) {
         self.pid = pid; self.ppid = ppid; self.startedAt = startedAt; self.command = command
-        self.isLoop = isLoop; self.cwd = cwd; self.account = account
+        self.isLoop = isLoop; self.loopID = loopID; self.cwd = cwd; self.account = account
     }
 }
 
@@ -178,7 +187,7 @@ public struct RateLimitEvent: Equatable {
 }
 
 public enum AppInfo {
-    public static let version = "0.1.0"
+    public static let version = "0.2.0"
     public static let bundleID = "com.hapk.claude-switcher"
     public static let name = "Claude Switcher"
 }

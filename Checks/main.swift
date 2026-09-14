@@ -81,13 +81,14 @@ do {
         RawSession(pid: 2, ppid: 0, startedAt: now.addingTimeInterval(200), command: "claude"),
         RawSession(pid: 3, ppid: 0, startedAt: now.addingTimeInterval(600), command: "claude"),
     ]
-    let attributed = SessionAttribution.attribute(raw, history: history, fallback: "m04", loops: [2], cwds: [3: "/tmp"])
-    equal(attributed[0].account, .assumed("m04"), "older than history -> assumed")
-    equal(attributed[1].account, .known("m19"))
-    equal(attributed[2].account, .known("m04"))
+    let attributed = SessionAttribution.attribute(raw, history: history, fallback: "m04", loops: [2: LoopInfo(isLoop: true, id: "1-2")], cwds: [3: "/tmp"])
+    equal(attributed[0].account, Attribution.assumed("m04"), "older than history -> assumed")
+    equal(attributed[1].account, Attribution.known("m19"))
+    equal(attributed[2].account, Attribution.known("m04"))
+    equal(attributed[1].loopID, "1-2")
     check(attributed[1].isLoop && !attributed[0].isLoop, "loop flags")
     equal(attributed[2].cwd, "/tmp")
-    equal(SessionAttribution.attribute([raw[0]], history: [], fallback: nil, loops: [], cwds: [:])[0].account, .unknown)
+    equal(SessionAttribution.attribute([raw[0]], history: [], fallback: nil, loops: [:], cwds: [:])[0].account, Attribution.unknown)
 }
 
 // MARK: hop policy
@@ -126,20 +127,66 @@ do {
     equal(HopPolicy.ranked(three, excluding: "m04", t: t, now: now, maxAge: 300).map(\.name), ["m07", "m19"])
 }
 
-// MARK: hook script, launcher, plan
+// MARK: shell installer, launcher, plan, hooks
 do {
-    let s = HookScript.normalized
-    check(s.hasPrefix("#!/usr/bin/env bash\n"), "shebang first")
-    check(s.contains("kill -TERM \"$pid\"") && s.contains("CLAUDE_AS_LOOP") && s.contains("restart.json"), "hook body")
-    check(!s.contains("\n    #!/"), "indentation stripped")
-    equal(LoginLauncher.shellQuote("a'b"), "'a'\\''b'")
-    check(LoginLauncher.loginScript(cli: "/x/claude-account", name: "m07", email: "me@x.io").contains("'/x/claude-account' login 'm07' --email 'me@x.io'"), "login command")
-    check(!LoginLauncher.loginScript(cli: "/x/ca", name: "m07", email: nil).contains("--email"), "no email flag when empty")
+    let block = ShellInstaller.rcBlock()
+    check(block.hasPrefix(ShellInstaller.markBegin + "\n") && block.hasSuffix(ShellInstaller.markEnd), "rc block delimited by the plugin's markers")
+    check(block.contains("CLAUDE_AS_ID=\"$id\"") && block.contains("hop-$id") && block.contains("alias claude='claude-as'"), "rc block content")
+    check(block.contains("printf 'claude-as: resuming as %s\\n'"), "printf newline escape survives (raw string)")
+
+    let empty = ShellInstaller.replaceBlock(in: "", with: "B1\nB2")
+    equal(empty, "\nB1\nB2\n", "append to empty")
+    let appended = ShellInstaller.replaceBlock(in: "x=1", with: ShellInstaller.rcBlock())
+    check(appended.hasPrefix("x=1\n\n# >>> claude-account >>>"), "append after existing content with blank line")
+    let pluginRC = "a\n\n# >>> claude-account >>>\nclaude-as() { claude-account use x; }\n# <<< claude-account <<<\nalias claude='claude-as'\n"
+    let replaced = ShellInstaller.replaceBlock(in: pluginRC, with: "# >>> claude-account >>>\nOURS\n# <<< claude-account <<<")
+    equal(replaced, "a\n\n# >>> claude-account >>>\nOURS\n# <<< claude-account <<<\nalias claude='claude-as'\n", "replace in place keeps the rest")
+    equal(ShellInstaller.replaceBlock(in: pluginRC, with: nil), "a\nalias claude='claude-as'\n", "remove drops block and the blank line before it")
+    equal(ShellInstaller.replaceBlock(in: "no block\n", with: nil), "no block\n", "remove without block is a no-op")
+    check(ShellInstaller.existingBlock(in: pluginRC)?.contains("claude-account use") == true, "existing block detected")
+
+    equal(ShellInstaller.shellQuote("a'b"), "'a'\\''b'")
+    let shim = ShellInstaller.shimText(appBinary: "/Applications/X.app/Contents/MacOS/X")
+    check(shim.hasPrefix("#!/bin/sh\n") && shim.contains("exec \"$APP\" \"$@\"") && shim.contains("= hook ] && exit 0"), "shim shape")
+    let script = LoginLauncher.loginScript(cli: "/x/claude-switcher", name: "m07", email: "me@x.io")
+    check(script.contains("'/x/claude-switcher' login 'm07' --email 'me@x.io'"), "login command")
+    check(!LoginLauncher.loginScript(cli: "/x/cs", name: "m07", email: nil).contains("--email"), "no email flag when empty")
+
+    let dump = """
+    keychain: "/Users/x/Library/Keychains/login.keychain-db"
+        "svce"<blob>="Claude Code-credentials"
+        "svce"<blob>="Claude Code-credentials-acct-m04"
+        "svce"<blob>="Claude Code-credentials-3e86560c"
+        "svce"<blob>="Something else"
+    """
+    equal(Keychain.parseServices(dump), ["Claude Code-credentials", "Claude Code-credentials-acct-m04", "Claude Code-credentials-3e86560c"], "service names parsed")
+
+    let loops = SessionScanner.parseLoopInfo("  123 claude A=1 CLAUDE_AS_LOOP=1 CLAUDE_AS_ID=77-42 PATH=/x\n  456 claude PATH=/x\n  789 claude CLAUDE_AS_LOOP=1 HOME=/h")
+    equal(loops[123], LoopInfo(isLoop: true, id: "77-42"))
+    equal(loops[456], LoopInfo(isLoop: false, id: nil))
+    equal(loops[789], LoopInfo(isLoop: true, id: nil))
+
+    let root: [String: Any] = ["a": 1, "hooks": ["Stop": [["hooks": [["type": "command", "command": "bash x"]]],
+                                                          ["hooks": [["type": "command", "command": "bash \"$HOME/.local/bin/claude-switcher-hook\""]]]],
+                                                 "SessionStart": [["hooks": [["command": "echo hi"]]]]]]
+    let added = HookInstaller.addHooks(root)
+    let hooks = added["hooks"] as? [String: Any]
+    let stop = hooks?["Stop"] as? [[String: Any]]
+    equal(stop?.count, 2, "legacy entry stripped, ours added")
+    equal(((stop?.last?["hooks"] as? [[String: Any]])?.first?["command"] as? String), HookInstaller.command)
+    equal((hooks?["StopFailure"] as? [[String: Any]])?.first?["matcher"] as? String, "rate_limit")
+    equal((hooks?["SessionStart"] as? [[String: Any]])?.count, 1, "other events untouched")
+    let removed = HookInstaller.removeHooks(added)
+    let rh = removed["hooks"] as? [String: Any]
+    equal((rh?["Stop"] as? [[String: Any]])?.count, 1, "remove leaves foreign hook")
+    equal((rh?["StopFailure"] as? [[String: Any]])?.count, 0)
+    equal(removed["a"] as? Int, 1)
+
     let plan = RestartPlan(to: "m19", created: now, pids: ["123": "m19"])
     let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
     let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
     equal(try? dec.decode(RestartPlan.self, from: try enc.encode(plan)), plan, "plan round trip")
-    check(CLI.isValidName("m07") && CLI.isValidName("a.b_c@d-e") && !CLI.isValidName("bad name") && !CLI.isValidName(""), "name validation")
+    check(Switcher.isValidName("m07") && Switcher.isValidName("a.b_c@d-e") && !Switcher.isValidName("bad name") && !Switcher.isValidName(""), "name validation")
 }
 
 print("\(total - failed)/\(total) checks passed")

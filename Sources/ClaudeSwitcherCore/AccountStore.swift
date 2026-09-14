@@ -47,6 +47,61 @@ public final class AccountStore {
         return parsed
     }
 
+    /// The full `oauthAccount` object, untyped, for writing profiles / patching the config byte-for-byte in content.
+    public func liveOAuthAccountRaw() -> [String: Any]? { oauthAccountRaw(in: Paths.claudeJSON) }
+
+    public func oauthAccountRaw(in url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return root["oauthAccount"] as? [String: Any]
+    }
+
+    public func profileRaw(_ name: String) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: Paths.profileFile(name)) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    public func profileExists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: Paths.profileFile(name).path) }
+
+    /// `<name>.json` in the CLI's shape: `{name, saved_at, subscriptionType, oauthAccount}`.
+    public func writeProfile(name: String, oauthAccount: [String: Any], subscriptionType: String?) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: Paths.accountsDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let obj: [String: Any] = ["name": name, "saved_at": ISO8601.string(Date()),
+                                  "subscriptionType": subscriptionType ?? "?", "oauthAccount": oauthAccount]
+        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try data.write(to: Paths.profileFile(name), options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.profileFile(name).path)
+    }
+
+    public func removeProfileFiles(_ name: String) {
+        try? FileManager.default.removeItem(at: Paths.profileFile(name))
+        try? FileManager.default.removeItem(at: Paths.quotaFile(name))
+    }
+
+    public func moveQuota(_ old: String, to new: String) {
+        try? FileManager.default.moveItem(at: Paths.quotaFile(old), to: Paths.quotaFile(new))
+    }
+
+    /// Replaces `.oauthAccount` in `~/.claude.json`, everything else untouched; atomic write, mode 600.
+    public func patchClaudeJSON(oauthAccount: [String: Any]) throws {
+        let url = Paths.claudeJSON
+        let data = try Data(contentsOf: url)
+        guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ShellError("\(url.path) is not a JSON object")
+        }
+        root["oauthAccount"] = oauthAccount
+        let out = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        let tmp = url.deletingLastPathComponent().appendingPathComponent(".claude.json.switcher-\(ProcessInfo.processInfo.processIdentifier)")
+        try out.write(to: tmp, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        claudeJSONMtime = nil
+    }
+
+    public func setCurrentMarker(name: String, uuid: String) { writePrivate(Paths.currentMarker, "\(name)\t\(uuid)\n") }
+    public func removeCurrentMarker() { try? FileManager.default.removeItem(at: Paths.currentMarker) }
+
     public func liveName(profiles: [AccountProfile], live: OAuthAccount?) -> String? {
         guard let uuid = live?.accountUuid else { return nil }
         return profiles.first { $0.uuid == uuid }?.name
@@ -85,6 +140,30 @@ public final class AccountStore {
     }
     public func writeHop(_ name: String) { writePrivate(Paths.hopFile, name + "\n") }
     public func removeHop() { try? FileManager.default.removeItem(at: Paths.hopFile) }
+
+    /// Per-loop relaunch target for this app's `claude-as` (`.switcher/hop-<CLAUDE_AS_ID>`).
+    public func writeHopMarker(id: String, _ name: String) { Paths.ensureSwitcherDir(); writePrivate(Paths.hopMarker(id), name + "\n") }
+
+    public func hopMarkers() -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: Paths.switcherDir, includingPropertiesForKeys: nil))?
+            .filter { $0.lastPathComponent.hasPrefix("hop-") } ?? []
+    }
+
+    /// The hook and the CLI check this before waiting on the app.
+    public func appAlive(now: Date = Date(), maxAge: TimeInterval = 120) -> Bool {
+        guard let m = mtime(Paths.aliveFile) else { return false }
+        return now.timeIntervalSince(m) < maxAge
+    }
+
+    public func appendEvent(_ e: RateLimitEvent) {
+        Paths.ensureSwitcherDir()
+        append(Paths.eventsLog, "\(Int(e.at.timeIntervalSince1970))\trate_limit\t\(e.pid)\n")
+    }
+
+    public func appendRestartLog(_ line: String) {
+        Paths.ensureSwitcherDir()
+        append(Paths.restartsLog, line + "\n")
+    }
 
     // MARK: app-owned files
 

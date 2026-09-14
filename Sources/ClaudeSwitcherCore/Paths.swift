@@ -27,9 +27,16 @@ public enum Paths {
     public static var restartsLog: URL { switcherDir.appendingPathComponent("restarts.log") }
     public static var appLog: URL { switcherDir.appendingPathComponent("app.log") }
 
+    public static var lockFile: URL { switcherDir.appendingPathComponent("lock") }
+    public static func hopMarker(_ id: String) -> URL { switcherDir.appendingPathComponent("hop-\(id)") }
+
     public static var localBin: URL { home.appendingPathComponent(".local/bin") }
-    public static var hookScript: URL { localBin.appendingPathComponent("claude-switcher-hook") }
-    public static var cliShim: URL { localBin.appendingPathComponent("claude-account") }
+    /// `claude-switcher` on PATH: a two-line shim that execs the app binary (rewritten when the app moves).
+    public static var shim: URL { localBin.appendingPathComponent("claude-switcher") }
+    /// Bash hook shipped by 0.1.0; removed by uninstall, superseded by `claude-switcher hook`.
+    public static var oldHookScript: URL { localBin.appendingPathComponent("claude-switcher-hook") }
+    /// The team plugin's CLI, if installed. Same store, so both tools can be used side by side.
+    public static var pluginCLI: URL { localBin.appendingPathComponent("claude-account") }
 
     public static func profileFile(_ name: String) -> URL { accountsDir.appendingPathComponent("\(name).json") }
     public static func quotaFile(_ name: String) -> URL { accountsDir.appendingPathComponent("\(name).quota") }

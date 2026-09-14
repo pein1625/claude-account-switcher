@@ -3,18 +3,12 @@ import AppKit
 import ServiceManagement
 import ClaudeSwitcherCore
 
-struct DoctorItem: Identifiable {
-    enum Level { case ok, warn, fail }
-    let id = UUID()
-    var level: Level
-    var text: String
-}
-
 struct DriftInfo: Equatable {
     var tokenEmail: String?
     var tokenUuid: String?
     var tokenAccountName: String?
     var configName: String?
+    var summary: String { "LỆCH: token live thuộc \(tokenAccountName ?? tokenEmail ?? "?"), config nói \(configName ?? "?")" }
 }
 
 /// Single source of truth for the UI and the background loops. Everything runs on the main actor; blocking
@@ -33,8 +27,7 @@ final class AppModel: ObservableObject {
     @Published var lastError: String?
     @Published var busyText: String?
     @Published var lastPollAt: Date?
-    @Published var cli: CLI? = CLI.locate()
-    @Published var hookInstalled = HookInstaller.isScriptInstalled() && HookInstaller.isSettingsWired()
+    @Published var setup = SetupStatus()
     @Published var doctorItems: [DoctorItem] = []
     @Published var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     @Published var autoSwitch: Bool = AppSettings.autoSwitch {
@@ -43,6 +36,15 @@ final class AppModel: ObservableObject {
 
     let store = AccountStore()
     let client = UsageClient()
+    let switcher = Switcher()
+
+    static var appBinary: String { Bundle.main.executableURL?.path ?? CommandLine.arguments[0] }
+    static var runningFromBundle: Bool { Bundle.main.bundleURL.pathExtension == "app" }
+    /// `CLAUDE_SWITCHER_SMOKE=1`: UI smoke run without Keychain reads, network, or prompts.
+    static let smokeMode = ProcessInfo.processInfo.environment["CLAUDE_SWITCHER_SMOKE"] == "1"
+
+    /// What the Terminal login script calls: the shim when present, else the app binary itself.
+    var cliPath: String { FileManager.default.isExecutableFile(atPath: Paths.shim.path) ? Paths.shim.path : Self.appBinary }
 
     private var forcedExhausted: [String: Date] = [:]
     private var lastHopAt: Date?
@@ -62,11 +64,13 @@ final class AppModel: ObservableObject {
 
     func start() {
         AppSettings.register()
-        store.log("app start v\(AppInfo.version) pid \(ProcessInfo.processInfo.processIdentifier)")
+        store.log("app start v\(AppInfo.version) pid \(ProcessInfo.processInfo.processIdentifier) bin \(Self.appBinary)")
         usage = store.readUsageCache()
         lastMarker = store.currentMarker()
         if let m = lastMarker { lastSwitchAt = m.mtime }
         eventsOffset = store.readEvents(from: 0).offset
+        selfHealShim()
+        refreshSetup()
         reloadProfiles()
         tasks = [
             Task { [weak self] in
@@ -82,10 +86,75 @@ final class AppModel: ObservableObject {
                     try? await Task.sleep(for: .seconds(secs))
                 }
             },
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                await self?.offerSetupIfNeeded()
+            },
         ]
     }
 
     func stop() { tasks.forEach { $0.cancel() } }
+
+    // MARK: shell integration
+
+    func refreshSetup() { setup = SetupStatus.current(appBinary: Self.appBinary) }
+
+    /// The shim points at an absolute app path; when the app was moved, fix it silently on launch.
+    private func selfHealShim() {
+        guard Self.runningFromBundle, ShellInstaller.shimStatus(appBinary: Self.appBinary) == .stale else { return }
+        try? ShellInstaller.installShim(appBinary: Self.appBinary)
+        store.log("shim rewritten -> \(Self.appBinary)")
+    }
+
+    func installAll(rc: Bool = true) async {
+        busyText = "Đang cài hop tự động…"
+        defer { busyText = nil }
+        do {
+            try ShellInstaller.installShim(appBinary: Self.appBinary)
+            try await HookInstaller.wireSettings()
+            if rc { try ShellInstaller.installRC(rc: ShellInstaller.rcFile()) }
+            refreshSetup()
+            lastError = nil
+            store.log("shell integration installed (rc: \(rc))")
+            Notifier.post("Đã bật hop tự động", "Mở terminal mới (hoặc source \(ShellInstaller.rcFile().lastPathComponent)) để `claude` chạy qua claude-as. Session đang chạy nhận hook sau khi restart.")
+        } catch {
+            lastError = error.localizedDescription
+            store.log("install failed: \(error.localizedDescription)")
+        }
+    }
+
+    func removeShellIntegration() async {
+        busyText = "Đang gỡ tích hợp shell…"
+        defer { busyText = nil }
+        do {
+            try await HookInstaller.unwireSettings()
+            try ShellInstaller.removeRC(rc: ShellInstaller.rcFile())
+            ShellInstaller.removeShim()
+            refreshSetup()
+            store.log("shell integration removed")
+        } catch { lastError = error.localizedDescription }
+    }
+
+    /// First launch from a bundle: one dialog, default button installs. Later launches stay quiet (banner only).
+    private func offerSetupIfNeeded() async {
+        guard Self.runningFromBundle, !Self.smokeMode, !setup.complete,
+              !AppSettings.defaults.bool(forKey: "didOfferSetup") else { return }
+        AppSettings.defaults.set(true, forKey: "didOfferSetup")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Bật hop tự động cho Claude Code?"
+        alert.informativeText = """
+        Claude Switcher sẽ cài vào máy:
+        • \(Paths.shim.path) — CLI claude-switcher
+        • hook Stop / StopFailure vào \(Paths.settingsJSON.path) (có backup)
+        • hàm claude-as + alias claude vào \(ShellInstaller.rcFile().path) (có backup)
+
+        Nhờ đó khi account hết quota, session đang chạy tự chuyển account và tiếp tục hội thoại (--continue). Gỡ được trong Cài đặt › Shell.
+        """
+        alert.addButton(withTitle: "Cài")
+        alert.addButton(withTitle: "Để sau")
+        if alert.runModal() == .alertFirstButtonReturn { await installAll() }
+    }
 
     // MARK: periodic work
 
@@ -96,7 +165,6 @@ final class AppModel: ObservableObject {
         var recs: [String: QuotaRecord] = [:]
         for p in profiles { if let r = store.quotaRecord(p.name) { recs[p.name] = r } }
         records = recs
-        cli = cli ?? CLI.locate()
     }
 
     private func tick() async {
@@ -107,12 +175,12 @@ final class AppModel: ObservableObject {
         prunePlan()
         ingestEvents(now: now)
         pollInterval = AppSettings.pollSeconds
-        hookInstalled = HookInstaller.isScriptInstalled() && HookInstaller.isSettingsWired()
+        refreshSetup()
         evaluate()
     }
 
-    /// `claude-account use` from a terminal (or the claude-as loop) rewrites `.current`; record it so
-    /// session attribution stays right and the policy waits for things to settle.
+    /// `claude-switcher use` / `claude-account use` from a terminal (or a claude-as loop) rewrites `.current`;
+    /// record it so session attribution stays right and the policy waits for things to settle.
     private func detectExternalSwitch(now: Date) {
         let m = store.currentMarker()
         defer { lastMarker = m }
@@ -128,9 +196,7 @@ final class AppModel: ObservableObject {
     private func prunePlan() {
         guard var p = store.readRestartPlan() else { plan = nil; return }
         let alive = Set(sessions.map { String($0.pid) })
-        if !sessions.isEmpty {
-            p.pids = p.pids.filter { alive.contains($0.key) }
-        }
+        if !sessions.isEmpty { p.pids = p.pids.filter { alive.contains($0.key) } }
         if p.pids.isEmpty {
             store.writeRestartPlan(nil); plan = nil
             store.log("restart plan complete")
@@ -174,7 +240,7 @@ final class AppModel: ObservableObject {
         let now = Date()
         let raw = await SessionScanner.scan(now: now)
         let pids = raw.map(\.pid)
-        let loops = await SessionScanner.loopFlags(pids: pids)
+        let loops = await SessionScanner.loopInfo(pids: pids)
         let cwds = await SessionScanner.cwds(pids: pids)
         let marker = store.currentMarker()
         var history = store.readSwitches()
@@ -184,9 +250,6 @@ final class AppModel: ObservableObject {
         }
         sessions = SessionAttribution.attribute(raw, history: history, fallback: marker?.name ?? liveName, loops: loops, cwds: cwds)
     }
-
-    /// `CLAUDE_SWITCHER_SMOKE=1`: UI smoke run without Keychain reads, network, or permission prompts.
-    static let smokeMode = ProcessInfo.processInfo.environment["CLAUDE_SWITCHER_SMOKE"] == "1"
 
     func pollUsage(force: Bool = false) async {
         let now = Date()
@@ -291,12 +354,12 @@ final class AppModel: ObservableObject {
     // MARK: actions
 
     func performSwitch(to name: String, auto: Bool, reason: String? = nil) async {
-        guard !busy, let cli else { lastError = cli == nil ? "Không tìm thấy CLI claude-account (~/.local/bin)" : nil; return }
+        guard !busy else { return }
         let from = liveName
         busyText = "Đang chuyển sang \(name)…"
         defer { busyText = nil }
         do {
-            let out = try await cli.use(name)
+            let out = try await switcher.use(name)
             let now = Date()
             store.appendSwitch(SwitchEvent(at: now, from: from, to: name, by: auto ? "auto" : "app"))
             store.log("switch \(from ?? "?") -> \(name) by \(auto ? "auto" : "user")\(reason.map { " (\($0))" } ?? ""): \(out.split(separator: "\n").first ?? "")")
@@ -339,7 +402,7 @@ final class AppModel: ObservableObject {
         guard let live = liveName else { return }
         guard s.isLoop else { lastError = "Session \(s.pid) không chạy qua claude-as, không tự relaunch được — gõ /exit rồi claude --continue"; return }
         planRestarts(for: [s], to: live)
-        store.writeHop(live)
+        if let id = s.loopID { store.writeHopMarker(id: id, live) } else { store.writeHop(live) }
         _ = kill(s.pid, SIGTERM)
         store.log("manual restart pid \(s.pid) -> \(live)")
         try? await Task.sleep(for: .seconds(3))
@@ -354,11 +417,10 @@ final class AppModel: ObservableObject {
     }
 
     func saveCurrent(as name: String) async {
-        guard let cli, CLI.isValidName(name) else { lastError = "Tên không hợp lệ (chữ, số, . _ @ -)"; return }
         busyText = "Đang lưu login hiện tại là \(name)…"
         defer { busyText = nil }
         do {
-            let out = try await cli.save(name)
+            let out = try await switcher.save(name: name)
             store.log("save \(name): \(out)")
             lastError = nil
             reloadProfiles()
@@ -367,22 +429,21 @@ final class AppModel: ObservableObject {
     }
 
     func addAccount(name: String, email: String) async {
-        guard let cli else { lastError = "Không tìm thấy CLI claude-account"; return }
-        guard CLI.isValidName(name) else { lastError = "Tên không hợp lệ (chữ, số, . _ @ -)"; return }
+        guard Switcher.isValidName(name) else { lastError = "Tên không hợp lệ (chữ, số, . _ @ -)"; return }
         guard !profiles.contains(where: { $0.name == name }) else { lastError = "'\(name)' đã tồn tại"; return }
+        guard Environment.which("claude") != nil else { lastError = "Không thấy `claude` trên PATH — thêm đường dẫn trong Cài đặt › Shell › PATH thêm"; return }
         do {
-            try await LoginLauncher.open(cli: cli.path, name: name, email: email.isEmpty ? nil : email, terminalApp: AppSettings.terminalApp)
+            try await LoginLauncher.open(cli: cliPath, name: name, email: email.isEmpty ? nil : email, terminalApp: AppSettings.terminalApp)
             lastError = nil
             store.log("login window opened for \(name)")
         } catch { lastError = error.localizedDescription }
     }
 
     func remove(_ name: String) async {
-        guard let cli else { return }
         busyText = "Đang xoá \(name)…"
         defer { busyText = nil }
         do {
-            _ = try await cli.remove(name)
+            _ = try await switcher.remove(name)
             usage.removeValue(forKey: name)
             store.writeUsageCache(usage)
             store.log("removed \(name)")
@@ -391,31 +452,14 @@ final class AppModel: ObservableObject {
     }
 
     func rename(_ old: String, to new: String) async {
-        guard let cli, CLI.isValidName(new) else { lastError = "Tên không hợp lệ"; return }
         busyText = "Đang đổi tên…"
         defer { busyText = nil }
         do {
-            _ = try await cli.rename(old, new)
+            _ = try await switcher.rename(old, to: new)
             if let u = usage.removeValue(forKey: old) { usage[new] = u }
             store.writeUsageCache(usage)
             reloadProfiles()
         } catch { lastError = error.localizedDescription }
-    }
-
-    func installHook() async {
-        busyText = "Đang cài hook…"
-        defer { busyText = nil }
-        do {
-            try await HookInstaller.install()
-            hookInstalled = true
-            store.log("hook installed")
-            lastError = nil
-        } catch { lastError = error.localizedDescription }
-    }
-
-    func uninstallHook() async {
-        do { try await HookInstaller.uninstall(); hookInstalled = false; store.log("hook removed") }
-        catch { lastError = error.localizedDescription }
     }
 
     /// Drift repair: the live token really belongs to X, config says Y. Save the live blob back into X's
@@ -425,12 +469,14 @@ final class AppModel: ObservableObject {
         busyText = "Đang sửa lệch…"
         defer { busyText = nil }
         do {
-            guard let liveBlob = await Keychain.readLive() else { throw ShellError("không đọc được live Keychain") }
-            if let owner = d.tokenAccountName {
-                try await Keychain.write(service: Keychain.savedService(owner), raw: liveBlob.raw)
+            try await switcher.withLock {
+                guard let liveBlob = await Keychain.readLive() else { throw SwitcherError("không đọc được live Keychain") }
+                if let owner = d.tokenAccountName {
+                    try await Keychain.write(service: Keychain.savedService(owner), raw: liveBlob.raw)
+                }
+                guard let target = await Keychain.readSaved(configName) else { throw SwitcherError("snapshot của \(configName) trống") }
+                try await Keychain.write(service: Keychain.liveService, raw: target.raw)
             }
-            guard let target = await Keychain.readSaved(configName) else { throw ShellError("snapshot của \(configName) trống") }
-            try await Keychain.write(service: Keychain.liveService, raw: target.raw)
             store.log("realigned: live token (\(d.tokenAccountName ?? d.tokenEmail ?? "?")) saved back, \(configName) restored to live")
             drift = nil
             lastDriftCheck = .distantPast
@@ -466,36 +512,10 @@ final class AppModel: ObservableObject {
     func setExtraPath(_ p: String) {
         AppSettings.defaults.set(p, forKey: AppSettings.Key.extraPath.rawValue)
         Environment.extraPath = p
-        cli = CLI.locate()
     }
 
-    // MARK: doctor
-
     func runDoctor() async {
-        var items: [DoctorItem] = []
-        func add(_ l: DoctorItem.Level, _ t: String) { items.append(DoctorItem(level: l, text: t)) }
-        if let cli { add(.ok, "CLI claude-account: \(cli.path) (v\(await cli.version() ?? "?"))") }
-        else { add(.fail, "Không thấy claude-account. Chạy /claude-account:claude-account install trong Claude Code.") }
-        add(Environment.which("jq") != nil ? .ok : .fail, "jq: \(Environment.which("jq") ?? "không có trên PATH")")
-        add(Environment.which("claude") != nil ? .ok : .warn, "claude: \(Environment.which("claude") ?? "không thấy trên PATH (login mới sẽ lỗi)")")
-        add(liveAccount != nil ? .ok : .fail, liveAccount.map { "~/.claude.json oauthAccount: \($0.emailAddress ?? "?")" } ?? "~/.claude.json không có oauthAccount")
-        add(liveName != nil ? .ok : .warn, liveName.map { "Login hiện tại đã lưu là '\($0)'" } ?? "Login hiện tại chưa được lưu → Lưu login hiện tại")
-        let live = await Keychain.readLive()
-        add(live != nil ? .ok : .fail, live != nil ? "Keychain live item có OAuth token" : "Keychain '\(Keychain.liveService)' không có OAuth token")
-        add(.ok, "\(profiles.count) account đã lưu trong \(Paths.accountsDir.path)")
-        for p in profiles {
-            let u = usage[p.name]
-            if let u, u.isFreshAPI { add(.ok, "\(p.name): usage API OK (5h \(Int(u.fiveHour?.pct ?? 0))%)") }
-            else if let u, let code = u.httpStatus { add(.warn, "\(p.name): usage API HTTP \(code) → dùng số ghi trong .quota") }
-            else if let u, let e = u.error { add(.warn, "\(p.name): \(e)") }
-            else { add(.warn, "\(p.name): chưa đo") }
-        }
-        add(hookInstalled ? .ok : .warn, hookInstalled ? "Hook restart theo pid đã cài (Stop + StopFailure)" : "Hook restart chưa cài → session cũ chỉ hop qua cơ chế .hop của plugin")
-        if FileManager.default.fileExists(atPath: Paths.home.appendingPathComponent("Library/LaunchAgents/com.hapk.claude-quota-ping.plist").path) {
-            add(.warn, "LaunchAgent claude-quota-ping đang đổi account tạm 3 lần/ngày; app chờ 30s ổn định sau mỗi lần .current đổi")
-        }
-        add(drift == nil ? .ok : .fail, drift == nil ? "Keychain và ~/.claude.json khớp" : "LỆCH: token live thuộc \(drift?.tokenAccountName ?? drift?.tokenEmail ?? "?")")
-        doctorItems = items
+        doctorItems = await Doctor.run(store: store, usage: usage, appBinary: Self.appBinary, drift: drift?.summary)
     }
 }
 

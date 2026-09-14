@@ -53,18 +53,30 @@ public enum SessionScanner {
         return TimeInterval(days * 86400 + secs)
     }
 
-    /// pids whose environment carries `CLAUDE_AS_LOOP=1`: only those sessions get relaunched with `--continue` after exit.
-    public static func loopFlags(pids: [Int32]) async -> Set<Int32> {
-        guard !pids.isEmpty else { return [] }
+    /// Which sessions run inside a `claude-as` loop (`CLAUDE_AS_LOOP=1`) and, for this app's loop, under which id.
+    /// Only loop sessions can be relaunched with `--continue` after exit.
+    public static func loopInfo(pids: [Int32]) async -> [Int32: LoopInfo] {
+        guard !pids.isEmpty else { return [:] }
         let list = pids.map(String.init).joined(separator: ",")
-        guard let r = try? await Shell.run("/bin/ps", ["-Eww", "-o", "pid=,command=", "-p", list], timeout: 15), r.ok else { return [] }
-        var flagged = Set<Int32>()
-        for line in r.stdout.split(separator: "\n") {
+        guard let r = try? await Shell.run("/bin/ps", ["-Eww", "-o", "pid=,command=", "-p", list], timeout: 15), r.ok else { return [:] }
+        return parseLoopInfo(r.stdout)
+    }
+
+    public static func parseLoopInfo(_ output: String) -> [Int32: LoopInfo] {
+        var out: [Int32: LoopInfo] = [:]
+        for line in output.split(separator: "\n") {
             let trimmed = line.drop(while: { $0 == " " })
             guard let sp = trimmed.firstIndex(of: " "), let pid = Int32(trimmed[..<sp]) else { continue }
-            if trimmed.contains(" CLAUDE_AS_LOOP=1") { flagged.insert(pid) }
+            let isLoop = trimmed.contains(" CLAUDE_AS_LOOP=1")
+            var id: String?
+            if let r = trimmed.range(of: " CLAUDE_AS_ID=") {
+                let tail = trimmed[r.upperBound...]
+                let value = tail.prefix { $0 != " " }
+                if !value.isEmpty { id = String(value) }
+            }
+            out[pid] = LoopInfo(isLoop: isLoop, id: id)
         }
-        return flagged
+        return out
     }
 
     public static func cwds(pids: [Int32]) async -> [Int32: String] {
@@ -90,7 +102,7 @@ public enum SessionAttribution {
     /// `history` must be sorted by time. A session started after switch N and before switch N+1 runs as N's target.
     /// Sessions older than the first known switch get `.assumed(fallback)`: the steady-state account.
     public static func attribute(_ raw: [RawSession], history: [SwitchEvent], fallback: String?,
-                                 loops: Set<Int32>, cwds: [Int32: String]) -> [Session] {
+                                 loops: [Int32: LoopInfo], cwds: [Int32: String]) -> [Session] {
         raw.map { s in
             let account: Attribution
             if let ev = history.last(where: { $0.at <= s.startedAt }) {
@@ -100,8 +112,9 @@ public enum SessionAttribution {
             } else {
                 account = .unknown
             }
+            let loop = loops[s.pid]
             return Session(pid: s.pid, ppid: s.ppid, startedAt: s.startedAt, command: s.command,
-                           isLoop: loops.contains(s.pid), cwd: cwds[s.pid], account: account)
+                           isLoop: loop?.isLoop ?? false, loopID: loop?.id, cwd: cwds[s.pid], account: account)
         }
     }
 }
