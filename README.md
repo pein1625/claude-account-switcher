@@ -1,10 +1,11 @@
 # Claude Switcher (macOS menu bar)
 
-Đăng nhập nhiều account Claude subscription trên một máy, xem quota 5h / 7d của **từng** account ngay trên
-menu bar, đổi account bằng một click, và **tự hop** sang account còn quota khi account đang dùng hết cửa sổ
-5 giờ — session `claude` đang chạy tự mở lại và **tiếp tục đúng hội thoại** (`--continue`).
+> Nhiều account Claude Code trên một Mac: xem quota 5h / 7d từng account trên menu bar, đổi account một click,
+> **tự hop** sang account còn quota khi account đang dùng hết cửa sổ 5 giờ — session `claude` đang chạy tự mở
+> lại và **tiếp tục đúng hội thoại** (`--continue`).
 
-Standalone: một `.app`, không cần plugin hay công cụ nào khác ngoài Claude Code đã đăng nhập.
+Standalone: một `.app`, không cần plugin hay công cụ nào khác ngoài Claude Code đã đăng nhập claude.ai
+(Pro / Max / Team). macOS 14+, Intel hoặc Apple Silicon.
 
 ```
 ┌ Claude Switcher ──────────────── đo 40s trước ↻ ┐
@@ -23,39 +24,45 @@ Standalone: một `.app`, không cần plugin hay công cụ nào khác ngoài C
 
 ## Cài
 
-**Một dòng (khuyên dùng):**
+### Cách 1 — một dòng lệnh (khuyên dùng, không bị hỏi gì)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/scripts/install.sh | bash
 ```
 
-Tải dmg mới nhất (GitHub Releases, không có thì file trong `releases/` của repo) bằng `curl`, copy app vào
-`/Applications`, mở. Không có prompt Gatekeeper: Gatekeeper chỉ chặn file mang cờ quarantine, mà chỉ trình duyệt /
-AirDrop / Slack mới gắn cờ đó, `curl` thì không.
+Tải dmg mới nhất bằng `curl`, copy app vào `/Applications`, mở. Không có hộp thoại Gatekeeper: Gatekeeper chỉ chặn
+file mang cờ quarantine, mà chỉ trình duyệt / AirDrop / Slack mới gắn cờ đó — `curl` thì không.
 
-**Tự tải file về rồi chạy** (cũng không prompt, vì vẫn là `curl`):
+### Cách 2 — tải file dmg
+
+Link: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.2.3.dmg
+
+1. Mở dmg, kéo `ClaudeSwitcher` vào `Applications` (cửa sổ có mũi tên).
+2. Mở app từ Applications. Vì app ký adhoc (chưa notarize), macOS hiện hộp thoại:
+
+   > **“ClaudeSwitcher” chưa được mở** — Apple không thể xác minh rằng “ClaudeSwitcher” không chứa phần mềm độc hại…
+   > *(“ClaudeSwitcher” Not Opened — Apple could not verify… is free of malware)*
+
+   Bấm **Xong** (Done) — **không** bấm “Chuyển vào Thùng rác”.
+3. **System Settings › Quyền riêng tư & Bảo mật** (Privacy & Security) › kéo xuống cuối, mục *Bảo mật* có dòng
+   “ClaudeSwitcher” đã bị chặn… › bấm **Vẫn mở** (Open Anyway) › xác nhận Touch ID / mật khẩu › mở app lại
+   (hộp thoại mới có nút **Mở**).
+   - macOS 15+ không còn right-click › Open để bỏ qua; chỉ có đường này.
+   - Nút “Vẫn mở” chỉ hiện trong ~1 giờ sau lần bị chặn. Không thấy → mở app lần nữa cho bị chặn, rồi vào lại.
+   - Thay bước 3 bằng Terminal cũng được: `xattr -dr com.apple.quarantine /Applications/ClaudeSwitcher.app`
+4. Lần đầu mở, app hỏi cho phép thông báo và **“Bật hop tự động?”** → *Cài* (xem bảng dưới).
+
+### Cách 3 — build từ source (không vướng Gatekeeper; cần Command Line Tools, không cần Xcode)
 
 ```bash
-curl -fL -o ~/Downloads/ClaudeSwitcher.dmg https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.2.2.dmg
-open ~/Downloads/ClaudeSwitcher.dmg        # kéo app vào Applications, mở
-```
-
-**Từ file dmg gửi tay:** mở `ClaudeSwitcher-<version>.dmg`, kéo app vào Applications, mở. App ký adhoc (không
-notarize) nên macOS chặn lần đầu — *"Apple could not verify… free of malware"* → **System Settings › Privacy &
-Security › Open Anyway** (macOS 15+ bỏ right-click › Open), hoặc:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/ClaudeSwitcher.app
-```
-
-**Từ source** (không vướng Gatekeeper; cần Command Line Tools `xcode-select --install`, không cần Xcode):
-
-```bash
+xcode-select --install   # nếu chưa có
 git clone https://github.com/pein1625/claude-account-switcher.git && cd claude-account-switcher
-make install          # swift build → build/ClaudeSwitcher.app → /Applications → open
+make install             # swift build → build/ClaudeSwitcher.app → /Applications → open
 ```
 
-Lần đầu mở, app hỏi **"Bật hop tự động?"** → *Cài*. Nó ghi (đều có backup `.bak-*`):
+### Sau khi mở lần đầu
+
+App hỏi **“Bật hop tự động?”** → *Cài*. Nó ghi (đều có backup `.bak-*`):
 
 | Gì | Đâu | Để làm gì |
 |---|---|---|
@@ -63,11 +70,9 @@ Lần đầu mở, app hỏi **"Bật hop tự động?"** → *Cài*. Nó ghi (
 | hook `Stop` + `StopFailure(rate_limit)` | `~/.claude/settings.json` | kết thúc đúng session cần hop ở cuối turn |
 | hàm `claude-as` + `alias claude='claude-as'` | `~/.zshrc` (hoặc `~/.bashrc`) | vòng lặp mở lại `claude --continue` bằng account mới |
 
-Mở terminal mới sau đó. Rồi: **Lưu login hiện tại…** đặt tên cho account đang đăng nhập → **Thêm account…**
-cho account thứ hai (mở Terminal, đăng nhập một lần; login hiện tại không bị đụng).
-
-Yêu cầu: macOS 14+ (Intel hoặc Apple Silicon), Claude Code 2.1.x đã đăng nhập claude.ai (Pro/Max/Team;
-login bằng API key không có gì để snapshot).
+Mở terminal mới sau đó. Rồi: **Lưu login hiện tại…** đặt tên cho account đang đăng nhập → **Thêm account…** cho
+account thứ hai (mở Terminal chạy `claude auth login` trong config dir tạm; trình duyệt mở trang đăng nhập —
+không mở thì copy URL trong Terminal vào trình duyệt; login hiện tại không bị đụng).
 
 ## Cách hoạt động
 

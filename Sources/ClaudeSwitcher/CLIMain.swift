@@ -5,7 +5,7 @@ import ClaudeSwitcherCore
 /// `claude-switcher <command>` - the same operations the menu bar app performs, from a terminal or a script.
 enum CLIMain {
     static let commands: Set<String> = [
-        "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login",
+        "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login", "login-prepare", "login-finish",
         "status", "doctor", "hook", "install", "uninstall", "version", "help",
         "--version", "-v", "--help", "-h", "--status", "--doctor", "--uninstall",
     ]
@@ -25,6 +25,9 @@ enum CLIMain {
       claude-switcher login <name> [--email <email>]
                                               sign in to ANOTHER account in a scratch config dir and snapshot it;
                                               the current login is not touched (opens the browser once)
+      claude-switcher login-prepare <name>    step 1 of the same flow for scripts: prints the scratch dir; then run
+                                              CLAUDE_CONFIG_DIR=<dir> claude auth login, then login-finish
+      claude-switcher login-finish <name> <dir>
       claude-switcher remove <name>           delete a saved snapshot (live login untouched)
       claude-switcher rename <old> <new>      rename a snapshot
       claude-switcher names                   bare names, for shell completion
@@ -82,6 +85,16 @@ enum CLIMain {
                 out(try await switcher.rename(rest[0], to: rest[1]))
             case "login":
                 return try await login(rest, switcher: switcher)
+            case "login-prepare":
+                // prints only the scratch dir on stdout; the caller runs `CLAUDE_CONFIG_DIR=<dir> claude auth login` next
+                guard let name = rest.first else { return fail("usage: login-prepare <name>") }
+                let ctx = try await switcher.loginPrepare(name: name)
+                FileHandle.standardError.write(Data("Signing in inside a scratch config dir; the current login (\(switcher.current()?.email ?? "none")) is not touched.\n".utf8))
+                out(ctx.scratch.path)
+            case "login-finish":
+                guard rest.count == 2 else { return fail("usage: login-finish <name> <scratch-dir>") }
+                let ctx = try Switcher.LoginContext.load(scratch: URL(fileURLWithPath: rest[1]))
+                out(try await switcher.loginFinish(name: rest[0], ctx: ctx))
             case "status", "--status":
                 await status(store: store, noAPI: rest.contains("--no-api"))
             case "doctor", "--doctor":
@@ -113,7 +126,9 @@ enum CLIMain {
         }
     }
 
-    /// Interactive: runs `claude auth login` with this terminal's stdio inside a scratch CLAUDE_CONFIG_DIR.
+    /// Interactive. `claude auth login` is a TUI: it must run in the terminal's foreground process group, and a
+    /// Foundation `Process` child does not (it gets SIGTTOU on raw mode and stops silently). So after preparing
+    /// the scratch dir this process execs bash on the same script the menu's Terminal window uses.
     static func login(_ rest: [String], switcher: Switcher) async throws -> Int32 {
         var name: String?
         var email: String?
@@ -125,24 +140,14 @@ enum CLIMain {
         }
         guard let name else { throw SwitcherError("usage: login <name> [--email <email>]") }
         let ctx = try await switcher.loginPrepare(name: name)
-        guard let claude = Environment.which("claude") else { throw SwitcherError("claude not found on PATH") }
-        print("Signing in inside a scratch config dir (\(ctx.scratch.path)); the current login (\(switcher.current()?.email ?? "none")) is not touched.")
-        print("Running: \(claude) auth login --claudeai\(email.map { " --email \($0)" } ?? "")")
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: claude)
-        p.arguments = ["auth", "login", "--claudeai"] + (email.map { ["--email", $0] } ?? [])
-        var env = ProcessInfo.processInfo.environment
-        env["CLAUDE_CONFIG_DIR"] = ctx.scratch.path
-        env["PATH"] = Environment.path
-        p.environment = env
-        try p.run()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else {
-            try? FileManager.default.removeItem(at: ctx.scratch)
-            throw SwitcherError("claude auth login failed (exit \(p.terminationStatus))")
-        }
-        print(try await switcher.loginFinish(name: name, ctx: ctx))
-        return 0
+        let script = LoginLauncher.loginScript(cli: appBinary, name: name, email: email, scratch: ctx.scratch.path)
+        let file = ctx.scratch.appendingPathComponent("run.sh")
+        try script.write(to: file, atomically: true, encoding: .utf8)
+        let words: [String] = ["/bin/bash", file.path]
+        var argv: [UnsafeMutablePointer<CChar>?] = words.map { strdup($0) }
+        argv.append(nil)
+        execv("/bin/bash", &argv)
+        throw SwitcherError("exec /bin/bash failed: \(String(cString: strerror(errno)))")
     }
 
     static func status(store: AccountStore, noAPI: Bool) async {

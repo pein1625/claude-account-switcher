@@ -3,21 +3,38 @@ import Foundation
 /// `claude auth login` needs a real terminal (browser round-trip, paste-code fallback), so adding an account
 /// opens a Terminal window running `claude-switcher login <name>`; the live login stays untouched.
 public enum LoginLauncher {
-    public static func loginScript(cli: String, name: String, email: String?) -> String {
-        var cmd = "\(ShellInstaller.shellQuote(cli)) login \(ShellInstaller.shellQuote(name))"
-        if let email, !email.isEmpty { cmd += " --email \(ShellInstaller.shellQuote(email))" }
+    /// bash runs `claude auth login` itself (same shape as the proven claude-account script); the binary only
+    /// prepares the scratch dir and snapshots the result.
+    /// `scratch` given: the caller already ran login-prepare (the `claude-switcher login` command execs this).
+    public static func loginScript(cli: String, name: String, email: String?, scratch: String? = nil) -> String {
+        let q = ShellInstaller.shellQuote
+        let emailArg = (email?.isEmpty == false) ? " --email \(q(email!))" : ""
+        let prepare = scratch.map { "scratch=\(q($0))" } ?? #"scratch=$("$cs" login-prepare "$name") || exit 1"#
         return """
         #!/bin/bash
-        export PATH=\(ShellInstaller.shellQuote(Environment.path))
+        export PATH=\(q(Environment.path))
+        cs=\(q(cli))
+        name=\(q(name))
         echo "Claude Switcher: đăng nhập account '\(name)' (login hiện tại không bị đụng)"
-        echo "claude: $(command -v claude || echo 'KHÔNG THẤY trên PATH') $(claude --version 2>/dev/null | head -1)"
-        echo "Trình duyệt sẽ mở trang đăng nhập Claude. Không mở → copy URL mà claude in ra bên dưới vào trình duyệt."
+        if ! command -v claude >/dev/null 2>&1; then
+          echo "KHÔNG THẤY claude trên PATH. Cài Claude Code hoặc thêm đường dẫn vào Cài đặt › Shell › PATH thêm." >&2
+          echo "PATH=$PATH" >&2
+          exit 1
+        fi
+        echo "claude: $(command -v claude) ($(claude --version 2>/dev/null | head -1))"
+        \(prepare)
         echo
-        \(cmd)
+        echo "Trình duyệt sẽ mở trang đăng nhập Claude. Không mở → copy URL claude in ra bên dưới vào trình duyệt, rồi dán code lại đây."
+        echo
+        CLAUDE_CONFIG_DIR="$scratch" claude auth login\(emailArg)
         status=$?
         echo
-        if [ $status -eq 0 ]; then echo "Xong. Quay lại Claude Switcher, account sẽ xuất hiện trong danh sách."
-        else echo "Thất bại (exit $status). Xem thông báo phía trên; gửi nội dung cửa sổ này nếu cần hỗ trợ."; fi
+        if [ $status -eq 0 ]; then
+          "$cs" login-finish "$name" "$scratch" && echo "Xong. Quay lại Claude Switcher, account sẽ xuất hiện trong danh sách."
+        else
+          rm -rf "$scratch"
+          echo "claude auth login thất bại (exit $status). Xem thông báo phía trên; gửi nội dung cửa sổ này nếu cần hỗ trợ."
+        fi
         echo "Có thể đóng cửa sổ này."
         """
     }

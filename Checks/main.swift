@@ -153,7 +153,8 @@ do {
     let shim = ShellInstaller.shimText(appBinary: "/Applications/X.app/Contents/MacOS/X")
     check(shim.hasPrefix("#!/bin/sh\n") && shim.contains("exec \"$APP\" \"$@\"") && shim.contains("= hook ] && exit 0"), "shim shape")
     let script = LoginLauncher.loginScript(cli: "/x/claude-switcher", name: "m07", email: "me@x.io")
-    check(script.contains("'/x/claude-switcher' login 'm07' --email 'me@x.io'"), "login command")
+    check(script.contains("cs='/x/claude-switcher'") && script.contains("login-prepare \"$name\"") && script.contains("login-finish \"$name\" \"$scratch\""), "login script uses prepare/finish")
+    check(script.contains("claude auth login --email 'me@x.io'"), "bash runs claude auth login itself with the email")
     check(!LoginLauncher.loginScript(cli: "/x/cs", name: "m07", email: nil).contains("--email"), "no email flag when empty")
 
     let dump = """

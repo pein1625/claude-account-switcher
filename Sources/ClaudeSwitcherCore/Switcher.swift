@@ -168,11 +168,25 @@ public struct Switcher {
 
     // MARK: login (interactive; the caller runs `claude auth login` between prepare and finish)
 
-    public struct LoginContext {
+    public struct LoginContext: Codable {
         public let scratch: URL
         public let servicesBefore: Set<String>
         public let liveBeforeName: String?
         public let liveFingerprintBefore: String?
+
+        static let fileName = ".switcher-login.json"
+
+        /// Persisted inside the scratch dir so `login-prepare` and `login-finish` can be separate processes
+        /// (the Terminal script runs `claude auth login` itself in between).
+        public func save() throws {
+            let data = try JSONEncoder().encode(self)
+            try data.write(to: scratch.appendingPathComponent(LoginContext.fileName), options: .atomic)
+        }
+
+        public static func load(scratch: URL) throws -> LoginContext {
+            let data = try Data(contentsOf: scratch.appendingPathComponent(fileName))
+            return try JSONDecoder().decode(LoginContext.self, from: data)
+        }
     }
 
     /// Signing in happens inside a scratch `CLAUDE_CONFIG_DIR`, so the live login is not touched. The account
@@ -191,7 +205,9 @@ public struct Switcher {
             fingerprint = live.fingerprint
             if let liveName, live.hasRefreshToken { _ = try await save(name: liveName) }
         }
-        return LoginContext(scratch: scratch, servicesBefore: before, liveBeforeName: liveName, liveFingerprintBefore: fingerprint)
+        let ctx = LoginContext(scratch: scratch, servicesBefore: before, liveBeforeName: liveName, liveFingerprintBefore: fingerprint)
+        try ctx.save()
+        return ctx
     }
 
     public func loginFinish(name: String, ctx: LoginContext) async throws -> String {

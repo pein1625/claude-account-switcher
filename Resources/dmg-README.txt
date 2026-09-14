@@ -6,12 +6,14 @@ Con dung file dmg nay thi:
 
 1. Keo ClaudeSwitcher.app vao thu muc Applications (bieu tuong ben canh).
 
-2. Mo app lan dau. macOS se chan vi app chua notarize (ky adhoc):
-     "ClaudeSwitcher" Not Opened / Apple could not verify "ClaudeSwitcher" is free of malware
-   Lam MOT trong hai:
-     a) System Settings > Privacy & Security > keo xuong cuoi > "Open Anyway" > mo lai app.
+2. Mo app tu Applications. macOS se chan vi app chua notarize (ky adhoc):
+     "ClaudeSwitcher" chua duoc mo / Not Opened - Apple khong the xac minh... / could not verify...
+   Bam "Xong" (Done), KHONG bam "Chuyen vao Thung rac". Roi lam MOT trong hai:
+     a) System Settings > Quyen rieng tu & Bao mat (Privacy & Security) > keo xuong cuoi
+        > dong "ClaudeSwitcher da bi chan..." > "Van mo" (Open Anyway) > Touch ID/mat khau > mo app lai.
+        (Nut "Van mo" chi hien ~1 gio sau lan bi chan; khong thay -> mo app lan nua roi vao lai.)
      b) Terminal:   xattr -dr com.apple.quarantine /Applications/ClaudeSwitcher.app
-   (macOS 15+ khong con right-click > Open cho app chua ky.)
+   macOS 15+ khong con right-click > Open cho app chua ky.
 
 3. App hoi "Bat hop tu dong?" -> Cai. No ghi:
      ~/.local/bin/claude-switcher            (CLI)
