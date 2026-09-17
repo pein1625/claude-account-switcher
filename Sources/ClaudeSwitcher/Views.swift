@@ -25,6 +25,8 @@ struct MenuBarLabel: View {
 
 struct MenuBarView: View {
     @EnvironmentObject var model: AppModel
+    // qualified: ClaudeSwitcherCore also exports an `Environment` (the subprocess PATH).
+    @SwiftUI.Environment(\.openSettings) private var openSettings
     @State private var showAdd = false
     @State private var showSave = false
     @State private var showSessions = false
@@ -55,9 +57,46 @@ struct MenuBarView: View {
             }
             Divider()
             actions
+            updateRow
         }
         .padding(12)
         .frame(width: 380)
+    }
+
+    private var updateRow: some View {
+        HStack(spacing: 6) {
+            switch model.update {
+            case .available(let v, let page):
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+                Text("Có bản \(v)").font(.caption)
+                Button("Cập nhật") { Task { await model.installUpdate() } }.controlSize(.mini).disabled(model.busy)
+                if let page {
+                    Button("Ghi chú") { NSWorkspace.shared.open(page) }.buttonStyle(.link).font(.caption2)
+                }
+                Spacer()
+            case .installing(let v):
+                ProgressView().controlSize(.small)
+                Text("Đang cài \(v) — app sẽ tự thoát rồi mở lại").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            case .checking:
+                ProgressView().controlSize(.small)
+                Text("Đang kiểm tra bản mới…").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            case .upToDate:
+                Text("Phiên bản \(AppInfo.version) — đang là mới nhất").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("Ẩn") { model.dismissUpdateNotice() }.buttonStyle(.link).font(.caption2)
+            case .failed(let why):
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                Text(why).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Spacer()
+                Button("Thử lại") { Task { await model.checkForUpdate(manual: true) } }.buttonStyle(.link).font(.caption2)
+            case nil:
+                Text("Phiên bản \(AppInfo.version)").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("Kiểm tra cập nhật") { Task { await model.checkForUpdate(manual: true) } }.buttonStyle(.link).font(.caption2)
+            }
+        }
     }
 
     private var header: some View {
@@ -194,7 +233,8 @@ struct MenuBarView: View {
                 Button(showAdd ? "Đóng" : "Thêm account…") { showAdd.toggle(); showSave = false }
                 Button(showSave ? "Đóng" : "Lưu login hiện tại…") { showSave.toggle(); showAdd = false }
                 Spacer()
-                SettingsLink { Image(systemName: "gearshape") }.buttonStyle(.borderless).help("Cài đặt")
+                Button { SettingsWindow.present { openSettings() } } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.borderless).help("Cài đặt")
                 Button { NSApplication.shared.terminate(nil) } label: { Image(systemName: "power") }.buttonStyle(.borderless).help("Thoát")
             }
             .controlSize(.small)
@@ -285,10 +325,8 @@ struct AccountRow: View {
                 Text("Đổi tên snapshot (Keychain item, profile, lịch sử). Login live không đổi; tên dùng trong `claude-as <tên>`.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            if let eff {
-                bar("5h", eff.fiveHour, eff.fiveResetsAt, threshold: AppSettings.hopAt)
-                if let seven = eff.sevenDay { bar("7d", seven, eff.sevenResetsAt, threshold: AppSettings.sevenDayAt) }
-            }
+            bar("5h", Reading.fiveHour(eff: eff, usage: u), threshold: AppSettings.hopAt)
+            bar("7d", Reading.sevenDay(eff: eff, usage: u), threshold: AppSettings.sevenDayAt)
             HStack(spacing: 8) {
                 Text(sourceText(eff, u)).font(.caption2).foregroundStyle(.secondary)
                 if sessions > 0 { Text("\(sessions) session").font(.caption2).foregroundStyle(.secondary) }
@@ -302,13 +340,44 @@ struct AccountRow: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(isLive ? Color.green.opacity(0.08) : Color.secondary.opacity(0.06)))
     }
 
-    private func bar(_ label: String, _ pct: Double, _ reset: Date?, threshold: Double) -> some View {
+    /// Both windows always keep their row. A window the current reading does not carry - a non-live account whose
+    /// token expired, a payload without `seven_day` - falls back to the last value measured for it, dimmed; only
+    /// an account never measured at all shows an empty bar.
+    private func bar(_ label: String, _ r: Reading, threshold: Double) -> some View {
         HStack(spacing: 6) {
             Text(label).font(.caption2.monospaced()).frame(width: 18, alignment: .leading)
-            ProgressView(value: min(max(pct, 0), 100), total: 100)
-                .tint(pct >= threshold ? .red : pct >= 70 ? .orange : .green)
-            Text(Format.pct(pct)).font(.caption.monospacedDigit()).frame(width: 38, alignment: .trailing)
-            Text(reset.map { "→ \(Format.clock($0))" } ?? "").font(.caption2).foregroundStyle(.secondary).frame(width: 78, alignment: .leading)
+            ProgressView(value: min(max(r.pct ?? 0, 0), 100), total: 100)
+                .tint(r.pct == nil ? .gray : r.pct! >= threshold ? .red : r.pct! >= 70 ? .orange : .green)
+                .opacity(r.pct == nil ? 0.35 : r.stale ? 0.55 : 1)
+            Text(r.pct.map { Format.pct($0) } ?? "—").font(.caption.monospacedDigit())
+                .foregroundStyle(r.pct == nil || r.stale ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .frame(width: 38, alignment: .trailing)
+            Text(r.resetsAt.map { "→ \(Format.clock($0))" } ?? "").font(.caption2).foregroundStyle(.secondary).frame(width: 78, alignment: .leading)
+        }
+        .help(r.stale ? "Số đo cũ: cửa sổ này không có trong lần đo gần nhất (token của account không live hết hạn sau vài giờ)." : "")
+    }
+
+    /// One window's number for the UI: what to draw, and whether it came from the current reading.
+    struct Reading {
+        var pct: Double?
+        var resetsAt: Date?
+        var stale: Bool
+
+        static func fiveHour(eff: Effective?, usage: AccountUsage?) -> Reading {
+            if let eff { return Reading(pct: eff.fiveHour, resetsAt: eff.fiveResetsAt, stale: false) }
+            return fallback(usage?.fiveHour)
+        }
+
+        static func sevenDay(eff: Effective?, usage: AccountUsage?) -> Reading {
+            if let eff, let seven = eff.sevenDay { return Reading(pct: seven, resetsAt: eff.sevenResetsAt, stale: false) }
+            return fallback(usage?.sevenDay)
+        }
+
+        /// Same optimism as the hop policy: a window whose reset time has passed reads 0, not its old number.
+        private static func fallback(_ w: WindowUsage?, now: Date = Date()) -> Reading {
+            guard let w else { return Reading(pct: nil, resetsAt: nil, stale: true) }
+            let expired = w.resetsAt.map { now >= $0 } ?? false
+            return Reading(pct: expired ? 0 : w.pct, resetsAt: w.resetsAt, stale: true)
         }
     }
 
@@ -327,7 +396,7 @@ struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @AppStorage(AppSettings.Key.hopAt.rawValue) private var hopAt = 90
     @AppStorage(AppSettings.Key.sevenDayAt.rawValue) private var sevenDayAt = 100
-    @AppStorage(AppSettings.Key.pollSeconds.rawValue) private var pollSeconds = 60
+    @AppStorage(AppSettings.Key.pollSeconds.rawValue) private var pollSeconds = 300
     @AppStorage(AppSettings.Key.notify.rawValue) private var notify = true
     @AppStorage(AppSettings.Key.terminalApp.rawValue) private var terminalApp = "Terminal"
     @AppStorage(AppSettings.Key.restartSessions.rawValue) private var restartSessions = true
@@ -355,7 +424,7 @@ struct SettingsView: View {
             percentRow("Hop khi 5h ≥", value: $hopAt, hint: "100 = chỉ hop khi cạn hẳn (hoặc session báo rate limit)")
             percentRow("Coi là hết khi 7d ≥", value: $sevenDayAt, hint: "account có 7d ≥ ngưỡng không được chọn làm đích")
             Picker("Đo quota mỗi", selection: $pollSeconds) {
-                Text("30s").tag(30); Text("1 phút").tag(60); Text("2 phút").tag(120); Text("5 phút").tag(300)
+                Text("1 phút").tag(60); Text("2 phút").tag(120); Text("5 phút").tag(300); Text("10 phút").tag(600)
             }
             Stepper("Cooldown giữa 2 lần tự hop: \(cooldown) phút", value: $cooldown, in: 1...60)
             Toggle("Lên lịch restart --continue cho session của account cũ (cần hook)", isOn: $restartSessions)
@@ -369,10 +438,40 @@ struct SettingsView: View {
                     Text("Terminal").tag("Terminal"); Text("iTerm").tag("iTerm")
                 }
             }
-            Text("Đo bằng token OAuth sẵn trong Keychain (chỉ đọc, không refresh). Account không live: token hết hạn sau vài giờ → dùng số .quota đã ghi, cửa sổ đã reset tính 0% (giống `claude-account next`).")
+            Text("Đo bằng token OAuth sẵn trong Keychain (chỉ đọc, không refresh). Account không live: token hết hạn sau vài giờ → dùng số .quota đã ghi, cửa sổ đã reset tính 0% (giống `claude-account next`). Session báo rate limit vẫn kích hoạt hop ngay, không đợi tới lần đo kế.")
                 .font(.caption).foregroundStyle(.secondary)
+            Section("Phiên bản") {
+                HStack {
+                    Text("Đang chạy \(AppInfo.version)")
+                    Spacer()
+                    updateControl
+                }
+                Text("Cập nhật tải bản mới nhất bằng scripts/install.sh của repo (curl → dmg → \(Bundle.main.bundleURL.deletingLastPathComponent().path)). App tự thoát rồi mở lại; log ở \(Paths.updateLog.path).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var updateControl: some View {
+        switch model.update {
+        case .available(let v, _):
+            Button("Cài bản \(v)") { Task { await model.installUpdate() } }.disabled(model.busy)
+        case .installing(let v):
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("đang cài \(v)…").foregroundStyle(.secondary) }
+        case .checking:
+            ProgressView().controlSize(.small)
+        case .upToDate:
+            Text("mới nhất").foregroundStyle(.secondary)
+        case .failed(let why):
+            HStack(spacing: 6) {
+                Text(why).font(.caption).foregroundStyle(.orange).lineLimit(1)
+                Button("Thử lại") { Task { await model.checkForUpdate(manual: true) } }
+            }
+        case nil:
+            Button("Kiểm tra cập nhật") { Task { await model.checkForUpdate(manual: true) } }
+        }
     }
 
     /// Typed percent with arrows; clamped to 1...100, re-evaluates the policy on change.

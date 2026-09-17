@@ -29,6 +29,8 @@ final class AppModel: ObservableObject {
     @Published var lastPollAt: Date?
     @Published var setup = SetupStatus()
     @Published var login: LoginState?
+    @Published var update: UpdateState?
+    private var lastUpdateCheck: Date = .distantPast
     private var loginFlow: LoginFlow?
     private var lastKnownLiveName: String?
     private var autoSaveAttemptAt: Date = .distantPast
@@ -99,6 +101,13 @@ final class AppModel: ObservableObject {
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(2))
                 await self?.offerSetupIfNeeded()
+            },
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                while !Task.isCancelled {
+                    await self?.checkForUpdate()
+                    try? await Task.sleep(for: .seconds(6 * 3600))
+                }
             },
         ]
     }
@@ -358,7 +367,12 @@ final class AppModel: ObservableObject {
         for p in profiles {
             let isLive = p.name == liveName
             guard let blob = isLive ? await Keychain.readLive() : await Keychain.readSaved(p.name) else {
-                next[p.name] = AccountUsage(fetchedAt: now, source: .none, error: "không đọc được Keychain", tokenExpiresAt: nil)
+                // Keep whatever was last measured (the UI shows it dimmed): an unreadable Keychain item says
+                // nothing about the account's windows, and the stale fetchedAt already keeps it out of the policy.
+                var u = next[p.name] ?? AccountUsage(fetchedAt: now, source: .none)
+                u.error = "không đọc được Keychain"
+                u.tokenExpiresAt = nil
+                next[p.name] = u
                 changed = true
                 continue
             }
@@ -374,6 +388,10 @@ final class AppModel: ObservableObject {
             var u = await client.fetchUsage(token: blob.accessToken, now: now)
             u.tokenExpiresAt = blob.expiresAt
             if u.isFreshAPI, let five = u.fiveHour {
+                // The payload does not always carry every window; a missing one means "unchanged", not "gone",
+                // so the last reading stays on screen instead of the 7d row blinking out.
+                if u.sevenDay == nil { u.sevenDay = next[p.name]?.sevenDay }
+                if u.extras.isEmpty { u.extras = next[p.name]?.extras ?? [:] }
                 store.writeQuotaRecord(p.name, QuotaRecord(pct: Int(five.pct.rounded(.down)), resetsAt: five.resetsAt, recordedAt: now), now: now)
                 // A rate-limit event is a strong hint, but a fresher API reading well under both thresholds
                 // overrules it (the event may have come from a misattributed session).
@@ -445,6 +463,61 @@ final class AppModel: ObservableObject {
                 let when = next.map { Format.clock($0) } ?? "?"
                 Notifier.post("Tất cả account đều hết quota", "Không còn account nào dưới \(Int(AppSettings.hopAt))%. Reset sớm nhất: \(when).")
             }
+        default: break
+        }
+    }
+
+    // MARK: update
+
+    /// Asks GitHub what the newest build is. The background loop runs this every 6 hours and stays silent when
+    /// there is nothing new; `manual` reports every outcome, including "already newest".
+    func checkForUpdate(manual: Bool = false) async {
+        guard !Self.smokeMode else { return }
+        if case .installing = update { return }
+        guard manual || Date().timeIntervalSince(lastUpdateCheck) > 3600 else { return }
+        lastUpdateCheck = Date()
+        if manual { update = .checking }
+        guard let release = await Updater.latest() else {
+            if manual { update = .failed("không hỏi được GitHub (mạng?)") }
+            return
+        }
+        guard Updater.isNewer(release.version, than: AppInfo.version) else {
+            update = manual ? .upToDate(release.version) : nil
+            return
+        }
+        let firstTime = {
+            if case .available(let v, _) = update, v == release.version { return false }
+            return true
+        }()
+        update = .available(release.version, release.pageURL)
+        store.log("update available: \(release.version) (running \(AppInfo.version))")
+        if !manual, firstTime, AppSettings.notify {
+            Notifier.post("Có bản Claude Switcher \(release.version)", "Đang chạy \(AppInfo.version). Mở menu và bấm Cập nhật để cài.")
+        }
+    }
+
+    /// Hands the upgrade to `scripts/install.sh`, which stops this app, replaces the bundle and reopens it.
+    func installUpdate() async {
+        guard case .available(let version, _) = update else { return }
+        guard Self.runningFromBundle else {
+            update = .failed("chỉ cập nhật được bản .app đã cài (đang chạy binary dev)")
+            return
+        }
+        let dest = Bundle.main.bundleURL.deletingLastPathComponent().path
+        do {
+            let pid = try Updater.startUpgrade(dest: dest, version: version, log: Paths.updateLog)
+            update = .installing(version)
+            store.log("update to \(version) started (pid \(pid), dest \(dest), log \(Paths.updateLog.path))")
+            Notifier.post("Đang cài Claude Switcher \(version)", "App sẽ tự thoát rồi mở lại. Log: \(Paths.updateLog.path)")
+        } catch {
+            update = .failed(error.localizedDescription)
+            store.log("update failed to start: \(error.localizedDescription)")
+        }
+    }
+
+    func dismissUpdateNotice() {
+        switch update {
+        case .upToDate, .failed: update = nil
         default: break
         }
     }
@@ -662,6 +735,14 @@ final class AppModel: ObservableObject {
     func runDoctor() async {
         doctorItems = await Doctor.run(store: store, usage: usage, appBinary: Self.appBinary, drift: drift?.summary)
     }
+}
+
+enum UpdateState: Equatable {
+    case checking
+    case upToDate(String)
+    case available(String, URL?)
+    case installing(String)
+    case failed(String)
 }
 
 enum Format {

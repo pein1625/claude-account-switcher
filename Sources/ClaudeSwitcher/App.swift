@@ -7,6 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
         if !AppModel.smokeMode { Notifier.requestPermission() }
     }
+
+    /// The app turns `.regular` while Settings is open (see `SettingsWindow`); closing that window must not
+    /// take the menu bar app down with it.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 struct ClaudeSwitcherApp: App {

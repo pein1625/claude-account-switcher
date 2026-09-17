@@ -19,6 +19,7 @@ Standalone: một `.app`, không cần plugin hay công cụ nào khác ngoài C
 │ ▸ 8 session claude đang chạy       m04 8        │
 │ ─────────────────────────────────────────────── │
 │ [Thêm account…] [Lưu login hiện tại…]    ⚙  ⏻   │
+│ Phiên bản 0.4.0            Kiểm tra cập nhật    │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -35,7 +36,7 @@ file mang cờ quarantine, mà chỉ trình duyệt / AirDrop / Slack mới gắ
 
 ### Cách 2 — tải file dmg
 
-Link: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.3.0.dmg
+Link: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.4.0.dmg
 
 1. Mở dmg, kéo `ClaudeSwitcher` vào `Applications` (cửa sổ có mũi tên).
 2. Mở app từ Applications. Vì app ký adhoc (chưa notarize), macOS hiện hộp thoại:
@@ -102,10 +103,16 @@ hop marker theo session, log.
 
 ### Đo quota
 
-Mỗi 60s (chỉnh được) app lấy access token của **từng** account (live từ item live, còn lại từ snapshot) và gọi
-`GET https://api.anthropic.com/api/oauth/usage` → `five_hour` / `seven_day`. **Chỉ đọc** — app không refresh hay
-tạo token (refresh token xoay vòng; một session cũ còn giữ token cũ sẽ văng nếu app tự refresh). Token của account
-không live hết hạn sau vài giờ → dùng số `.quota` đã ghi với quy tắc: cửa sổ đã qua `resets_at` tính 0%.
+Mỗi 5 phút (chỉnh được trong Cài đặt: 1 / 2 / 5 / 10 phút) app lấy access token của **từng** account (live từ
+item live, còn lại từ snapshot) và gọi `GET https://api.anthropic.com/api/oauth/usage` → `five_hour` / `seven_day`.
+**Chỉ đọc** — app không refresh hay tạo token (refresh token xoay vòng; một session cũ còn giữ token cũ sẽ văng nếu
+app tự refresh). Token của account không live hết hạn sau vài giờ → dùng số `.quota` đã ghi với quy tắc: cửa sổ đã
+qua `resets_at` tính 0%. Nhịp đo không làm chậm phản ứng khi hết quota: session báo rate limit đi qua hook và hop
+ngay, không đợi lần đo kế.
+
+Hai thanh **5h** và **7d** luôn có mặt cho mọi account. Lần đo hiện tại không có cửa sổ nào (token account không
+live đã hết hạn, hoặc payload thiếu `seven_day`) thì app giữ số đo gần nhất và làm mờ nó; chỉ account chưa từng đo
+được mới hiện `—`.
 
 ### Hop
 
@@ -141,6 +148,13 @@ riêng (`posix_openpt` + `posix_spawn` với `POSIX_SPAWN_SETSID`), chạy claud
 `open` giả đầu PATH để bắt URL claude muốn mở (URL này có `redirect_uri=localhost:<port>` → code tự quay về; URL in
 ra màn hình dùng `platform.claude.com` và bắt dán code — app dùng làm dự phòng). Kết thúc: snapshot vào Keychain
 `…-acct-<name>` + `<name>.json`, xoá item Keychain tạm, dọn thư mục tạm.
+
+### Cập nhật
+
+Dòng cuối menu hiện phiên bản đang chạy kèm **Kiểm tra cập nhật**; app cũng tự hỏi 6 tiếng một lần và chỉ lên tiếng
+khi có bản mới (thông báo macOS + nút **Cập nhật**). Nguồn: GitHub Release mới nhất và `releases/latest` trong repo,
+bản nào cao hơn thì thắng. Bấm cập nhật = chạy chính `scripts/install.sh` (curl → dmg → thư mục đang chứa app), nên
+app tự thoát rồi mở lại; log ở `~/.claude/accounts/.switcher/update.log`.
 
 ### Lệch Keychain
 

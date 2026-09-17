@@ -202,5 +202,22 @@ do {
     equal(Switcher.suggestName(email: "@x.io", taken: []), "account")
 }
 
+// MARK: Updater
+do {
+    check(Updater.isNewer("0.3.1", than: "0.3.0"), "patch bump is newer")
+    check(Updater.isNewer("v0.4.0", than: "0.3.9"), "tag prefix ignored")
+    check(Updater.isNewer("0.10.0", than: "0.9.9"), "numeric compare, not lexicographic")
+    check(Updater.isNewer("1.0", than: "0.9.9"), "missing component counts as 0")
+    check(!Updater.isNewer("0.3.0", than: "0.3.0"), "same version is not newer")
+    check(!Updater.isNewer("0.2.9", than: "0.3.0"), "older is not newer")
+    check(!Updater.isNewer("0.3.0", than: "0.3.0.1"), "extra component on current wins")
+    equal(Updater.normalize(" v1.2.3\n"), "1.2.3")
+    let cmd = Updater.upgradeCommand(dest: "/Users/x/My Apps", version: "0.4.0")
+    check(cmd.contains("DEST='/Users/x/My Apps'"), "dest quoted: \(cmd)")
+    check(cmd.contains("CLAUDE_SWITCHER_VERSION='0.4.0'"), "version pinned: \(cmd)")
+    check(cmd.contains("scripts/install.sh"), "runs the repo installer: \(cmd)")
+    check(!Updater.upgradeCommand(dest: "/Applications", version: nil).contains("CLAUDE_SWITCHER_VERSION"), "no version -> latest")
+}
+
 print("\(total - failed)/\(total) checks passed")
 exit(failed == 0 ? 0 : 1)

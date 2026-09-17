@@ -6,7 +6,7 @@ import ClaudeSwitcherCore
 enum CLIMain {
     static let commands: Set<String> = [
         "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login", "login-prepare", "login-finish",
-        "status", "doctor", "hook", "install", "uninstall", "version", "help", "whoami",
+        "status", "doctor", "hook", "install", "uninstall", "update", "version", "help", "whoami",
         "--version", "-v", "--help", "-h", "--status", "--doctor", "--uninstall",
     ]
 
@@ -34,6 +34,7 @@ enum CLIMain {
       claude-switcher next                    account a hop would go to now; exit 1 when none has room
       claude-switcher status [--no-api]       accounts, usage, decision, running sessions
       claude-switcher doctor                  dependency + store + shell integration check
+      claude-switcher update [--check]        install the newest release (--check only reports)
       claude-switcher install [--no-rc]       shim, Stop/StopFailure hook, claude-as + alias claude in your shell rc
       claude-switcher uninstall [--dry-run] [--keep-app]
       claude-switcher hook                    (used by Claude Code as the Stop / StopFailure hook)
@@ -122,6 +123,21 @@ enum CLIMain {
                     try ShellInstaller.installRC(rc: rc)
                     out("shell   claude-as + alias claude in \(rc.path) (backup kept). Open a new terminal or: source \(rc.path)")
                 }
+            case "update":
+                guard let release = await Updater.latest() else { return fail("cannot reach GitHub (no release info)") }
+                guard Updater.isNewer(release.version, than: AppInfo.version) else {
+                    out("\(AppInfo.version) is the newest build")
+                    return 0
+                }
+                out("update available: \(release.version) (running \(AppInfo.version))")
+                if rest.contains("--check") { return 0 }
+                let bundle = Bundle.main.bundleURL
+                guard bundle.pathExtension == "app" else {
+                    return fail("run this from the installed app (this is \(bundle.path)); or: curl -fsSL \(Updater.installScript) | bash")
+                }
+                let dest = bundle.deletingLastPathComponent().path
+                try Updater.startUpgrade(dest: dest, version: release.version, log: Paths.updateLog)
+                out("installer started into \(dest); the app restarts itself. Log: \(Paths.updateLog.path)")
             case "uninstall", "--uninstall":
                 let ok = await Uninstaller.run(removeApp: !rest.contains("--keep-app"), dryRun: rest.contains("--dry-run")) { out($0) }
                 return ok ? 0 : 1

@@ -7,7 +7,7 @@ struct AppSettings {
 
     enum Key: String {
         case autoSwitch, hopAt, sevenDayAt, pollSeconds, notify, terminalApp, restartSessions, extraPath, cooldownMinutes,
-             autoSaveLogin, loginPrivateWindow, loginViaTerminal
+             autoSaveLogin, loginPrivateWindow, loginViaTerminal, pollMigrated300
     }
 
     static func register() {
@@ -15,7 +15,7 @@ struct AppSettings {
             Key.autoSwitch.rawValue: true,
             Key.hopAt.rawValue: 90,
             Key.sevenDayAt.rawValue: 100,
-            Key.pollSeconds.rawValue: 60,
+            Key.pollSeconds.rawValue: 300,
             Key.notify.rawValue: true,
             Key.terminalApp.rawValue: "Terminal",
             Key.restartSessions.rawValue: true,
@@ -25,7 +25,20 @@ struct AppSettings {
             Key.loginPrivateWindow.rawValue: true,
             Key.loginViaTerminal.rawValue: false,
         ])
+        migratePollInterval()
         Environment.extraPath = defaults.string(forKey: Key.extraPath.rawValue) ?? ""
+    }
+
+    /// Up to 0.3.0 the app measured every 60s. Five minutes is enough: a rate-limit hook event still reacts at
+    /// once, and the policy only needs a reading fresher than `pollSeconds * 3`. Runs once; a value the user
+    /// picks after the migration stays.
+    private static func migratePollInterval() {
+        guard !defaults.bool(forKey: Key.pollMigrated300.rawValue) else { return }
+        defaults.set(true, forKey: Key.pollMigrated300.rawValue)
+        if defaults.object(forKey: Key.pollSeconds.rawValue) != nil,
+           defaults.integer(forKey: Key.pollSeconds.rawValue) < 300 {
+            defaults.set(300, forKey: Key.pollSeconds.rawValue)
+        }
     }
 
     static var autoSwitch: Bool { defaults.bool(forKey: Key.autoSwitch.rawValue) }
