@@ -1,5 +1,9 @@
 # Sống chung với plugin `claude-account`
 
+Từ 2026-09-20 plugin nằm luôn trong repo này tại `plugins/claude-account/` (lịch sử 5 commit giữ nguyên,
+tách từ repo team bằng `git subtree split`). Hai sản phẩm, một hợp đồng trên đĩa — đổi format `.hop`,
+`.quota` hay block shell thì sửa cả hai phía trong cùng một commit.
+
 App standalone, không cần plugin. Máy nào có cả hai thì dùng chung được vì app cố ý giữ cùng format:
 
 | | Plugin `claude-account` | App `claude-switcher` |

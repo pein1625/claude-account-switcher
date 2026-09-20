@@ -1,4 +1,6 @@
 Subject: claude-account: let Claude Switcher.app own .quota / .hop while it runs
+Status: proposal, not applied. Hunk headers carry no line ranges, so `git apply` rejects it;
+read it, then edit plugins/claude-account/scripts/claude-account.sh by hand.
 
 The menu bar app measures every account's usage straight from the OAuth usage endpoint and plans
 per-pid restarts. While it is alive (heartbeat accounts/.switcher/alive younger than 120 s) the

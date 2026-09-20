@@ -6,7 +6,7 @@
   "author": {
     "name": "DLS team"
   },
-  "repository": "git@gitlab.9prints.com:thunder/dls-ai-team.git",
+  "repository": "https://github.com/pein1625/claude-account-switcher.git",
   "keywords": [
     "account",
     "login",

@@ -1,0 +1,14 @@
+{
+  "name": "claude-account-switcher",
+  "description": "Multi-account Claude Code: the claude-account CLI plugin (bash, macOS + Linux) alongside Claude Switcher.app (macOS menu bar). Both share one store under ~/.claude/accounts.",
+  "owner": {
+    "name": "hapk"
+  },
+  "plugins": [
+    {
+      "name": "claude-account",
+      "source": "./plugins/claude-account",
+      "description": "Switch between Claude Code subscription accounts without re-login. Snapshots each login, swaps the live one in under a second, and hops to the next account when the 5h quota runs out. Runs where the .app cannot: Linux, VPS, any shell."
+    }
+  ]
+}

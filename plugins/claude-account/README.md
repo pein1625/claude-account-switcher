@@ -7,8 +7,8 @@ Claude Code holds exactly one login at a time. `claude-account` snapshots each l
 ## Quick start
 
 ```
-/plugin marketplace add git@gitlab.9prints.com:thunder/dls-ai-team.git   # 1. once per device (skip if added)
-/plugin install claude-account@dls-ai-team
+/plugin marketplace add pein1625/claude-account-switcher   # 1. once per device (skip if added)
+/plugin install claude-account@claude-account-switcher
 /claude-account:claude-account install                                   # 2. CLI shims + claude-as; then: source your shell rc
 ```
 ```bash
@@ -22,14 +22,14 @@ Step 5 needs a statusline (it is what reads the quota): `install` prints the one
 ## Install (once per device)
 
 ```
-/plugin marketplace add git@gitlab.9prints.com:thunder/dls-ai-team.git   # skip if already added
-/plugin install claude-account@dls-ai-team
+/plugin marketplace add pein1625/claude-account-switcher   # skip if already added
+/plugin install claude-account@claude-account-switcher
 /claude-account:claude-account install
 ```
 
 Then `source ~/.zshrc` (`~/.bashrc` on bash) or open a new terminal tab. The last step writes two small shims to `~/.local/bin/` (`claude-account`, `claude-account-statusline`), adds a `claude-as` shell function plus tab completion to your shell rc (picked from `$SHELL`; an older block is replaced in place), runs `claude-account doctor`, and prints what to do about the statusline. Set `BIN_DIR` or `RC` in the environment to change the targets. The shim looks up the plugin's current install path on every call, so `/plugin update` never breaks it.
 
-Without Claude Code plugins: `git clone git@gitlab.9prints.com:thunder/dls-ai-team.git` and run `plugins/claude-account/scripts/install.sh` from the clone.
+Without Claude Code plugins: `git clone https://github.com/pein1625/claude-account-switcher.git` and run `plugins/claude-account/scripts/install.sh` from the clone.
 
 ## How it works
 
@@ -150,7 +150,7 @@ It shows `model | ctx % | 5h % ->reset @account` plus the hop hint. Claude Code 
 | `current login (...) was never saved and would be lost` | Run `claude-account save <name>` for it, or pass `--force` to discard it. |
 | `warning: refresh token for '<name>' expired` | Claude will prompt for login when the access token runs out. Log in, then `claude-account save <name>`. |
 | `claude auth status` still shows the old email | The store was not switched. Run `claude-account doctor`; check `CLAUDE_CONFIG_DIR`. |
-| `claude-account: tool not found under ...` | The plugin was uninstalled or moved. `/plugin install claude-account@dls-ai-team` again, or rerun `install.sh` from a clone. |
+| `claude-account: tool not found under ...` | The plugin was uninstalled or moved. `/plugin install claude-account@claude-account-switcher` again, or rerun `install.sh` from a clone. |
 | Every session prints "CLI not linked on this device yet" | Run `/claude-account:claude-account install` once. The hint stops as soon as `~/.local/bin/claude-account` exists. |
 | `claude-account list` shows `-` under 5H, no hop ever happens | The statusline is not feeding `claude-account quota`. Set it up as in the Statusline section (standalone shim, or source the snippet from your own script). |
 | Auto hop did not fire although the statusline showed it | Check `~/.claude/accounts/.autohop.log`. Empty: the session was not started with `claude-as` or `CLAUDE_ACCOUNT_AUTOHOP` is unset. A line with `via=walk` and a wrong pid: report it, and use the one-key mode meanwhile. |
@@ -165,7 +165,7 @@ rm ~/.local/bin/claude-account ~/.local/bin/claude-account-statusline
 rm -rf ~/.claude/accounts           # profiles, .quota readings, .hop, .autohop.log
 ```
 
-then `/plugin uninstall claude-account@dls-ai-team`. The live login is never touched by uninstalling.
+then `/plugin uninstall claude-account@claude-account-switcher`. The live login is never touched by uninstalling.
 
 ## Files
 

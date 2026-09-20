@@ -178,6 +178,20 @@ claude-switcher install [--no-rc] | uninstall [--dry-run] [--keep-app]
 
 `claude-as [account] [claude args…]` — mở claude (đổi account trước nếu có tên); `claude` là alias của nó.
 
+## Bản plugin CLI (macOS + Linux)
+
+`plugins/claude-account/` — cùng việc, viết bằng bash, cài như một plugin Claude Code. Chạy được chỗ `.app`
+không tới: Linux, VPS, server không màn hình.
+
+```
+/plugin marketplace add pein1625/claude-account-switcher
+/plugin install claude-account@claude-account-switcher
+/claude-account:claude-account install
+```
+
+Dùng chung `~/.claude/accounts/` với app, không phải đăng nhập lại. Máy nào chạy cả hai thì đọc
+`integration/README.md` trước: hai installer ghi đè block `claude-as` của nhau.
+
 ## Gửi cho người khác
 
 ```bash
