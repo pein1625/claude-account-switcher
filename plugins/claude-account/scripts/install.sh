@@ -81,8 +81,11 @@ claude-as() {
     rc=$?
     [ -s "$dir/.hop" ] || return $rc
     next=$(cat "$dir/.hop"); rm -f "$dir/.hop"
-    claude-account use "$next" || return $?
-    printf 'claude-as: resuming as %s\n' "$next"
+    if claude-account use "$next"; then
+      printf 'claude-as: resuming as %s\n' "$next"
+    else
+      printf 'claude-as: switch to %s failed - resuming on the current account\n' "$next" >&2
+    fi
     set -- --continue
   done
 }

@@ -32,7 +32,7 @@ struct SetupStatus: Equatable {
 }
 
 enum Doctor {
-    static func run(store: AccountStore, usage: [String: AccountUsage], appBinary: String, drift: String?) async -> [DoctorItem] {
+    static func run(store: AccountStore, usage: [String: AccountUsage], appBinary: String) async -> [DoctorItem] {
         var items: [DoctorItem] = []
         func add(_ l: DoctorItem.Level, _ t: String) { items.append(DoctorItem(level: l, text: t)) }
 
@@ -49,10 +49,40 @@ enum Doctor {
         }
         add(live != nil ? .ok : .fail, live.map { "~/.claude.json oauthAccount: \($0.emailAddress ?? "?")" } ?? "~/.claude.json không có oauthAccount → `claude auth login` trước")
         add(liveName != nil ? .ok : .warn, liveName.map { "Login hiện tại đã lưu là '\($0)'" } ?? "Login hiện tại chưa lưu → “Lưu login hiện tại…”")
-        let liveBlob = await Keychain.readLive()
-        add(liveBlob?.hasRefreshToken == true ? .ok : .fail, liveBlob?.hasRefreshToken == true ? "Keychain live item có OAuth token" : "Keychain '\(Keychain.liveService)' không có OAuth token (login API key?)")
+        let now = Date()
+        let liveItem = await Keychain.inspect(service: Keychain.liveService)
+        if let problem = liveItem.snapshotProblem {
+            add(.fail, "Keychain '\(Keychain.liveService)': \(problem)")
+        } else {
+            add(.ok, "Keychain live item có OAuth token")
+        }
+        if let liveBlob = liveItem.blob, let cfgUuid = live?.accountUuid {
+            if liveBlob.isExpired(at: now) {
+                add(.warn, "Token live hết hạn → chưa kiểm được token thuộc account nào (Claude Code tự refresh khi chạy)")
+            } else if let p = await UsageClient().fetchProfile(token: liveBlob.accessToken), (200..<300).contains(p.status), let u = p.uuid {
+                if u == cfgUuid {
+                    add(.ok, "Token live thuộc đúng account trong ~/.claude.json")
+                } else {
+                    let owner = profiles.first { $0.uuid == u }?.name ?? p.email ?? u
+                    add(.fail, "LỆCH: token live thuộc \(owner), ~/.claude.json nói \(liveName ?? live?.emailAddress ?? "?") → Sửa lệch")
+                }
+            } else {
+                add(.warn, "Không kiểm được token live thuộc account nào (mạng / API)")
+            }
+        }
         add(.ok, "\(profiles.count) account đã lưu trong \(Paths.accountsDir.path)")
         for p in profiles {
+            let item = await Keychain.inspectSaved(p.name)
+            let isLive = p.name == liveName
+            if let problem = item.snapshotProblem {
+                add(isLive ? .warn : .fail, "\(p.name): snapshot không dùng được (\(problem))" + (isLive ? " — đang live, được chụp lại khi rời account" : " → ⋯ › Xoá snapshot rồi Thêm account lại"))
+            } else if let b = item.blob {
+                let refreshDead = b.refreshTokenExpiresAt.map { $0 <= now } ?? false
+                var parts: [String] = []
+                if let e = b.expiresAt { parts.append(e > now ? "access token tới \(Format.clock(e))" : "access token hết hạn \(Format.ago(e, now: now)) trước") }
+                if let r = b.refreshTokenExpiresAt { parts.append(refreshDead ? "REFRESH TOKEN HẾT HẠN" : "refresh token tới \(ISO8601.string(r).prefix(10))") }
+                add(refreshDead ? .warn : .ok, "\(p.name): snapshot có đủ token" + (parts.isEmpty ? "" : " (\(parts.joined(separator: ", ")))"))
+            }
             let u = usage[p.name]
             if let u, u.isFreshAPI { add(.ok, "\(p.name): usage API OK (5h \(Int(u.fiveHour?.pct ?? 0))%, 7d \(Int(u.sevenDay?.pct ?? 0))%)") }
             else if let u, let code = u.httpStatus { add(.warn, "\(p.name): usage API HTTP \(code) → dùng số ghi trong .quota") }
@@ -69,13 +99,15 @@ enum Doctor {
         if let rc = try? String(contentsOf: ShellInstaller.rcFile(), encoding: .utf8), !rc.contains("alias claude=") , setup.rc != .missing {
             add(.warn, "Thiếu alias claude='claude-as' → phải gõ claude-as thay cho claude")
         }
+        if setup.rc == .ours, ShellInstaller.rcOutdated(rc: ShellInstaller.rcFile()) {
+            add(.warn, "claude-as trong \(ShellInstaller.rcFile().path) là bản cũ → Cài lại (app tự cập nhật khi mở)")
+        }
         if FileManager.default.isExecutableFile(atPath: Paths.pluginCLI.path) {
             add(.ok, "Plugin claude-account cũng có mặt (\(Paths.pluginCLI.path)) — hai tool dùng chung store")
         }
         if FileManager.default.fileExists(atPath: Paths.home.appendingPathComponent("Library/LaunchAgents/com.hapk.claude-quota-ping.plist").path) {
             add(.warn, "LaunchAgent claude-quota-ping đổi account tạm 3 lần/ngày; app chờ 30s ổn định sau mỗi lần .current đổi")
         }
-        add(drift == nil ? .ok : .fail, drift ?? "Keychain và ~/.claude.json khớp")
         return items
     }
 }

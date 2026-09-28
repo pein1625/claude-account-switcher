@@ -202,6 +202,58 @@ do {
     equal(Switcher.suggestName(email: "@x.io", taken: []), "account")
 }
 
+// MARK: snapshots, drift, unusable accounts
+do {
+    func reason(_ raw: String) -> String? {
+        if case .failure(let e) = Result(catching: { try OAuthBlob.parse(raw) }) { return e.localizedDescription }
+        return nil
+    }
+    equal(reason("not json"), "item is not JSON")
+    equal(reason("{\"x\":1}"), "no claudeAiOauth object (API-key login?)")
+    equal(reason("{\"claudeAiOauth\":{\"accessToken\":\"\",\"refreshToken\":\"r\"}}"), "no access token")
+    equal(reason("{\"claudeAiOauth\":{\"refreshToken\":\"r\"}}"), "no access token")
+    let noRefresh = try? OAuthBlob.parse("{\"claudeAiOauth\":{\"accessToken\":\"a\"}}")
+    check(noRefresh != nil && noRefresh?.hasRefreshToken == false, "access-only blob parses")
+    equal(noRefresh.map { KeychainItem.ok($0).snapshotProblem } ?? nil, "no refresh token")
+    let full = try? OAuthBlob.parse("{\"claudeAiOauth\":{\"accessToken\":\"a\",\"refreshToken\":\"r\",\"expiresAt\":1800000000000}}")
+    check(full.map { KeychainItem.ok($0).snapshotProblem == nil } ?? false, "both tokens -> usable")
+    equal(full?.expiresAt, Date(timeIntervalSince1970: 1_800_000_000))
+    check(OAuthBlob(raw: "{\"claudeAiOauth\":{\"accessToken\":\"a\"}}") != nil && OAuthBlob(raw: "nope") == nil, "failable init follows parse")
+    equal(KeychainItem.missing.snapshotProblem, "no Keychain item")
+    equal(KeychainItem.invalid("no access token").snapshotProblem, "no access token")
+    check(KeychainItem.missing.blob == nil, "missing has no blob")
+
+    let saved = [AccountProfile(name: "m04", oauthAccount: OAuthAccount(accountUuid: "u4")),
+                 AccountProfile(name: "m19", oauthAccount: OAuthAccount(accountUuid: "u19"))]
+    equal(Switcher.snapshotTarget(configUuid: "u19", tokenUuid: nil, profiles: saved), .config, "unverifiable owner -> config name")
+    equal(Switcher.snapshotTarget(configUuid: "u19", tokenUuid: "u19", profiles: saved), .config)
+    equal(Switcher.snapshotTarget(configUuid: "u19", tokenUuid: "u4", profiles: saved), .owner("m04"), "drift -> real owner, never the config name")
+    equal(Switcher.snapshotTarget(configUuid: "u19", tokenUuid: "u99", profiles: saved), .skip, "unsaved owner -> no snapshot")
+
+    let withBroken = [AccountState(name: "m04", usage: api(95)), AccountState(name: "m19", record: QuotaRecord(pct: 50, resetsAt: now.addingTimeInterval(-60), recordedAt: nil), unusable: true),
+                      AccountState(name: "m07", usage: api(40))]
+    equal(HopPolicy.decide(live: "m04", states: withBroken, t: t, now: now), .hop(to: "m07", reason: "m04 5h 95% ≥ 90%"), "reset window makes m19 0% but its snapshot is unusable")
+    equal(HopPolicy.ranked(withBroken, excluding: "m04", t: t, now: now, maxAge: 300).map(\.name), ["m07"])
+    let onlyBroken = [AccountState(name: "m04", usage: api(95)), AccountState(name: "m19", usage: api(1, resetIn: 900), unusable: true)]
+    equal(HopPolicy.decide(live: "m04", states: onlyBroken, t: t, now: now), .allExhausted(nextReset: nil), "unusable account is no hop target")
+
+    let block = ShellInstaller.rcBlock()
+    check(block.contains("if \"$cs\" use \"$next\"; then") && block.contains("resuming on the current account"), "loop survives a failed switch")
+    check(!block.contains("\"$cs\" use \"$next\" || return"), "failed switch no longer ends the loop")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cs-checks-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let rc = dir.appendingPathComponent("zshrc")
+    let oldBlock = block.replacingOccurrences(of: "if \"$cs\" use \"$next\"; then", with: "\"$cs\" use \"$next\" || return $?; if true; then")
+    try? ("x=1\n\n" + oldBlock + "\n").write(to: rc, atomically: true, encoding: .utf8)
+    check(ShellInstaller.rcOutdated(rc: rc), "old app block is outdated")
+    try? ("x=1\n\n" + block + "\n").write(to: rc, atomically: true, encoding: .utf8)
+    check(!ShellInstaller.rcOutdated(rc: rc), "current block is not outdated")
+    try? "# >>> claude-account >>>\nclaude-as() { claude-account use x; }\n# <<< claude-account <<<\n".write(to: rc, atomically: true, encoding: .utf8)
+    check(!ShellInstaller.rcOutdated(rc: rc), "plugin block is left to the plugin")
+    check(!ShellInstaller.rcOutdated(rc: dir.appendingPathComponent("missing")), "no rc file")
+    try? FileManager.default.removeItem(at: dir)
+}
+
 // MARK: Updater
 do {
     check(Updater.isNewer("0.3.1", than: "0.3.0"), "patch bump is newer")

@@ -130,7 +130,8 @@ Một process `claude` giữ token trong RAM cả đời → chỉ đổi accoun
 3. Hook `claude-switcher hook` chạy ở **cuối mỗi turn**: pid của nó có trong plan và session chạy qua `claude-as`
    (`CLAUDE_AS_LOOP=1`) → ghi đích vào `.switcher/hop-<CLAUDE_AS_ID>` rồi `kill -TERM` chính nó. Vòng lặp
    `claude-as` đọc marker của **riêng nó**, `claude-switcher use <đích>`, chạy `claude --continue`. Session của
-   account mới không bị đụng; nhiều session hop cùng lúc không tranh nhau một file.
+   account mới không bị đụng; nhiều session hop cùng lúc không tranh nhau một file. `use` thất bại (snapshot đích
+   hỏng) → `claude-as` vẫn chạy `claude --continue` trên account hiện tại, session không mất.
 4. Rate limit giữa turn: hook ghi `events.log`, app đánh dấu account đó 100% và hop ngay; hook chờ tối đa 5s cho
    plan rồi restart luôn.
 5. Session "mồ côi": đang chạy trên account đã hết quota trong khi account live còn chỗ (ví dụ sau `/login` sang
@@ -160,7 +161,19 @@ app tự thoát rồi mở lại; log ở `~/.claude/accounts/.switcher/update.l
 
 Mỗi 10 phút app hỏi `GET /api/oauth/profile` bằng token live: uuid ≠ `~/.claude.json` (một session cũ đã ghi token
 refresh của nó đè lên store) → cảnh báo + **Sửa lệch**: lưu token live về snapshot của account thật sự sở hữu, rồi
-khôi phục snapshot của account config đang nói.
+khôi phục snapshot của account config đang nói. Sửa lệch kiểm lại chủ token ngay lúc bấm, và từ chối khi snapshot
+của account config đang giữ token của account khác.
+
+`use`, `save` và `login` cũng hỏi chủ token live trước khi chụp snapshot: token thuộc account khác thì lưu về đúng
+chủ (hoặc bỏ qua nếu chủ chưa được lưu), không bao giờ ghi dưới tên config đang nói. Không hỏi được (offline, token
+hết hạn) → chụp như cũ.
+
+### Snapshot hỏng
+
+Snapshot dùng được = có cả access token lẫn refresh token (app và plugin cùng một tiêu chí). Snapshot thiếu một
+trong hai, hoặc mất item Keychain → account đó hiện dòng đỏ, không bao giờ là đích hop, và không có session nào bị
+lên plan restart sang nó. `claude-switcher doctor` báo tình trạng từng snapshot (không in secret). Sửa: ⋯ › Xoá
+snapshot rồi Thêm account lại.
 
 ## CLI
 
@@ -176,7 +189,9 @@ claude-switcher status [--no-api] | doctor | whoami   (whoami: account trong con
 claude-switcher install [--no-rc] | uninstall [--dry-run] [--keep-app]
 ```
 
-`claude-as [account] [claude args…]` — mở claude (đổi account trước nếu có tên); `claude` là alias của nó.
+`claude-as [account] [claude args…]` — mở claude (đổi account trước nếu có tên); `claude` là alias của nó. Block
+`claude-as` do app viết được app tự cập nhật lên bản mới khi mở (có backup rc); terminal đang mở dùng bản cũ tới khi
+mở lại.
 
 ## Bản plugin CLI (macOS + Linux)
 

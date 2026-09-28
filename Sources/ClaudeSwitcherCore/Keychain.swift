@@ -17,16 +17,34 @@ public struct OAuthBlob {
     }
 
     public init?(raw: String) {
+        guard let blob = try? OAuthBlob.parse(raw) else { return nil }
+        self = blob
+    }
+
+    public static func parse(_ raw: String) throws -> OAuthBlob {
         guard let data = raw.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = root["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String, !token.isEmpty else { return nil }
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SwitcherError("item is not JSON")
+        }
+        guard let oauth = root["claudeAiOauth"] as? [String: Any] else {
+            throw SwitcherError("no claudeAiOauth object (API-key login?)")
+        }
+        guard let token = oauth["accessToken"] as? String, !token.isEmpty else { throw SwitcherError("no access token") }
+        return OAuthBlob(raw: raw, accessToken: token,
+                         hasRefreshToken: !((oauth["refreshToken"] as? String) ?? "").isEmpty,
+                         expiresAt: ms(oauth["expiresAt"]),
+                         refreshTokenExpiresAt: ms(oauth["refreshTokenExpiresAt"]),
+                         subscriptionType: oauth["subscriptionType"] as? String)
+    }
+
+    private init(raw: String, accessToken: String, hasRefreshToken: Bool, expiresAt: Date?,
+                 refreshTokenExpiresAt: Date?, subscriptionType: String?) {
         self.raw = raw
-        self.accessToken = token
-        self.hasRefreshToken = !((oauth["refreshToken"] as? String) ?? "").isEmpty
-        self.expiresAt = OAuthBlob.ms(oauth["expiresAt"])
-        self.refreshTokenExpiresAt = OAuthBlob.ms(oauth["refreshTokenExpiresAt"])
-        self.subscriptionType = oauth["subscriptionType"] as? String
+        self.accessToken = accessToken
+        self.hasRefreshToken = hasRefreshToken
+        self.expiresAt = expiresAt
+        self.refreshTokenExpiresAt = refreshTokenExpiresAt
+        self.subscriptionType = subscriptionType
     }
 
     private static func ms(_ v: Any?) -> Date? {
@@ -38,6 +56,24 @@ public struct OAuthBlob {
     public func isExpired(at now: Date) -> Bool {
         guard let e = expiresAt else { return false }
         return e <= now
+    }
+}
+
+public enum KeychainItem {
+    case ok(OAuthBlob)
+    case missing
+    case unreadable(String)
+    case invalid(String)
+
+    public var blob: OAuthBlob? { if case .ok(let b) = self { return b } else { return nil } }
+
+    public var snapshotProblem: String? {
+        switch self {
+        case .ok(let b): return b.hasRefreshToken ? nil : "no refresh token"
+        case .missing: return "no Keychain item"
+        case .unreadable(let why): return "Keychain read failed: \(why)"
+        case .invalid(let why): return why
+        }
     }
 }
 
@@ -53,14 +89,26 @@ public enum Keychain {
 
     public static func savedService(_ name: String) -> String { storePrefix + name }
 
-    public static func read(service: String) async -> OAuthBlob? {
-        guard let r = try? await Shell.run("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], timeout: 20),
-              r.ok else { return nil }
-        return OAuthBlob(raw: r.trimmedOut)
-    }
+    public static func read(service: String) async -> OAuthBlob? { await inspect(service: service).blob }
 
     public static func readLive() async -> OAuthBlob? { await read(service: liveService) }
     public static func readSaved(_ name: String) async -> OAuthBlob? { await read(service: savedService(name)) }
+
+    public static func inspect(service: String) async -> KeychainItem {
+        let r: ShellResult
+        do {
+            r = try await Shell.run("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], timeout: 20)
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
+        guard r.ok else {
+            if r.status == 44 || r.trimmedErr.contains("could not be found") { return .missing }
+            return .unreadable(r.trimmedErr.isEmpty ? "security exit \(r.status)" : r.trimmedErr)
+        }
+        do { return .ok(try OAuthBlob.parse(r.trimmedOut)) } catch { return .invalid(error.localizedDescription) }
+    }
+
+    public static func inspectSaved(_ name: String) async -> KeychainItem { await inspect(service: savedService(name)) }
 
     /// Copies a blob into a Keychain item (create or update). Used only by the drift repair.
     public static func write(service: String, raw: String) async throws {

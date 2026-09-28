@@ -69,7 +69,17 @@ fmt_epoch_ms() {
 
 json_get() { printf '%s' "$1" | jq -r "$2"; }
 
-is_oauth_blob() { printf '%s' "${1:-}" | jq -e '.claudeAiOauth.refreshToken' >/dev/null 2>&1; }
+blob_problem() {
+  [ -n "${1:-}" ] || { printf 'no Keychain item'; return 0; }
+  printf '%s' "$1" | jq -r '
+    def filled: type == "string" and length > 0;
+    if (.claudeAiOauth | type) != "object" then "no claudeAiOauth object (API-key login?)"
+    elif (.claudeAiOauth.accessToken | filled | not) then "no access token"
+    elif (.claudeAiOauth.refreshToken | filled | not) then "no refresh token"
+    else empty end' 2>/dev/null || printf 'item is not JSON'
+}
+
+is_oauth_blob() { [ -n "${1:-}" ] && [ -z "$(blob_problem "$1")" ]; }
 
 keychain_read()   { security find-generic-password -s "$1" -w 2>/dev/null; }
 keychain_write()  { security add-generic-password -U -a "$USER" -s "$1" -w "$2" >/dev/null; }
@@ -299,7 +309,7 @@ cmd_use() {
 
   local target_blob target_profile
   target_blob=$(read_saved_blob "$name" || true)
-  is_oauth_blob "$target_blob" || die "saved credentials for '$name' are missing or unreadable - log in as that account and run 'claude-account save $name'"
+  is_oauth_blob "$target_blob" || die "saved credentials for '$name' are unusable ($(blob_problem "$target_blob")) - log in as that account again: 'claude-account remove $name' then 'claude-account login $name'"
   target_profile=$(jq -c '.oauthAccount' "$(profile_file "$name")")
 
   local cur_profile cur_uuid cur_name="" cur_email
@@ -406,6 +416,7 @@ cmd_next() {
   for f in $(each_profile_file); do
     name=$(jq -r '.name' "$f")
     [ "$name" = "$skip" ] && continue
+    is_oauth_blob "$(read_saved_blob "$name" || true)" || continue
     score=$(quota_score "$name")
     [ "$score" -lt "$HOP_AT" ] 2>/dev/null || continue
     if [ "$score" -lt "$best_score" ]; then best="$name"; best_score="$score"; fi
@@ -454,6 +465,14 @@ cmd_doctor() {
   fi
   n=$(cmd_names | wc -l | tr -d ' ')
   report ok "$n saved account(s) in $ACCOUNTS_DIR"
+  local name problem live_name
+  live_name=$(current_name || true)
+  for name in $(cmd_names); do
+    problem=$(blob_problem "$(read_saved_blob "$name" || true)")
+    if [ -z "$problem" ]; then report ok "$name: snapshot holds both tokens"
+    elif [ "$name" = "$live_name" ]; then printf 'warn  %s: snapshot unusable (%s) - live now, re-snapshotted when you switch away\n' "$name" "$problem"
+    else report fail "$name: snapshot unusable ($problem) - 'claude-account remove $name' then 'claude-account login $name'"; fi
+  done
   [ "$ok" -eq 1 ]
 }
 

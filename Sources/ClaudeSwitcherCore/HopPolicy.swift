@@ -11,9 +11,12 @@ public struct AccountState: Equatable {
     public var usage: AccountUsage?
     public var record: QuotaRecord?
     public var forcedExhaustedUntil: Date?
+    public var unusable: Bool
 
-    public init(name: String, usage: AccountUsage? = nil, record: QuotaRecord? = nil, forcedExhaustedUntil: Date? = nil) {
+    public init(name: String, usage: AccountUsage? = nil, record: QuotaRecord? = nil, forcedExhaustedUntil: Date? = nil,
+                unusable: Bool = false) {
         self.name = name; self.usage = usage; self.record = record; self.forcedExhaustedUntil = forcedExhaustedUntil
+        self.unusable = unusable
     }
 }
 
@@ -62,7 +65,7 @@ public enum HopPolicy {
 
     /// Candidates ordered best-first: lowest 5h, then lowest 7d, then name.
     public static func ranked(_ states: [AccountState], excluding live: String?, t: Thresholds, now: Date, maxAge: TimeInterval) -> [Effective] {
-        states.filter { $0.name != live }
+        states.filter { $0.name != live && !$0.unusable }
             .map { effective($0, now: now, maxAge: maxAge) }
             .filter { !isExhausted($0, t) }
             .sorted { a, b in
@@ -84,7 +87,7 @@ public enum HopPolicy {
         }
         let candidates = ranked(states, excluding: live, t: t, now: now, maxAge: maxAge)
         guard let best = candidates.first else {
-            let resets = states.filter { $0.name != live }
+            let resets = states.filter { $0.name != live && !$0.unusable }
                 .map { effective($0, now: now, maxAge: maxAge) }
                 .compactMap { $0.fiveResetsAt }
                 .filter { $0 > now }

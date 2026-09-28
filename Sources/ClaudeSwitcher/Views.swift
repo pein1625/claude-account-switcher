@@ -298,6 +298,10 @@ struct AccountRow: View {
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).frame(width: 20)
             }
+            if let problem = model.unusable[profile.name] {
+                Text("Snapshot hỏng (\(problem)): không hop sang được → ⋯ › Xoá snapshot rồi Thêm account lại")
+                    .font(.caption2).foregroundStyle(.red)
+            }
             if confirmingRemove {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(isLive
@@ -352,7 +356,7 @@ struct AccountRow: View {
             Text(r.pct.map { Format.pct($0) } ?? "—").font(.caption.monospacedDigit())
                 .foregroundStyle(r.pct == nil || r.stale ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 .frame(width: 38, alignment: .trailing)
-            Text(r.resetsAt.map { "→ \(Format.clock($0))" } ?? "").font(.caption2).foregroundStyle(.secondary).frame(width: 78, alignment: .leading)
+            Text(r.resetsAt.map { $0 > Date() ? "→ \(Format.clock($0))" : "đã reset" } ?? "").font(.caption2).foregroundStyle(.secondary).frame(width: 78, alignment: .leading)
         }
         .help(r.stale ? "Số đo cũ: cửa sổ này không có trong lần đo gần nhất (token của account không live hết hạn sau vài giờ)." : "")
     }

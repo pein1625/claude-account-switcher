@@ -11,8 +11,33 @@ public struct SwitcherError: LocalizedError {
 /// loops relaunching at the same moment would otherwise re-snapshot the wrong blob into the wrong account.
 public struct Switcher {
     public let store: AccountStore
+    let owners: UsageClient
 
-    public init(store: AccountStore = AccountStore()) { self.store = store }
+    public init(store: AccountStore = AccountStore()) {
+        self.store = store
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 5
+        cfg.timeoutIntervalForResource = 8
+        owners = UsageClient(session: URLSession(configuration: cfg))
+    }
+
+    public enum SnapshotTarget: Equatable {
+        case config
+        case owner(String)
+        case skip
+    }
+
+    public static func snapshotTarget(configUuid: String, tokenUuid: String?, profiles: [AccountProfile]) -> SnapshotTarget {
+        guard let tokenUuid, tokenUuid != configUuid else { return .config }
+        if let owner = profiles.first(where: { $0.uuid == tokenUuid }) { return .owner(owner.name) }
+        return .skip
+    }
+
+    func liveTokenUuid(_ blob: OAuthBlob) async -> String? {
+        guard !blob.isExpired(at: Date()), let p = await owners.fetchProfile(token: blob.accessToken),
+              (200..<300).contains(p.status) else { return nil }
+        return p.uuid
+    }
 
     public static func isValidName(_ n: String) -> Bool {
         !n.isEmpty && n.range(of: "^[A-Za-z0-9._@-]+$", options: .regularExpression) != nil
@@ -86,13 +111,38 @@ public struct Switcher {
         let name = (requested?.isEmpty == false) ? requested! : email
         try Switcher.validate(name)
         var note = ""
-        if let other = store.loadProfiles().first(where: { $0.uuid == uuid && $0.name != name }) {
+        let profiles = store.loadProfiles()
+        if let other = profiles.first(where: { $0.uuid == uuid && $0.name != name }) {
             note = "\nwarning: this account is already saved as '\(other.name)'; saving again as '\(name)'"
         }
+        if let tokenUuid = await liveTokenUuid(blob), tokenUuid != uuid {
+            let owner = profiles.first { $0.uuid == tokenUuid }.map { "'\($0.name)' (\($0.email))" } ?? "an account that is not saved"
+            throw SwitcherError("the live token belongs to \(owner), not \(email) as \(Paths.claudeJSON.path) says - a session still running as that account refreshed it. Repair it first (Claude Switcher › Sửa lệch, or `claude-switcher use <name>`)")
+        }
+        try await writeSnapshot(name: name, oauthAccount: profile, blob: blob)
+        return "Saved '\(name)'  (\(email), \(profile["organizationName"] as? String ?? "-"))" + note
+    }
+
+    func writeSnapshot(name: String, oauthAccount profile: [String: Any], blob: OAuthBlob) async throws {
         try await Keychain.write(service: Keychain.savedService(name), raw: blob.raw)
         try store.writeProfile(name: name, oauthAccount: profile, subscriptionType: blob.subscriptionType)
-        store.setCurrentMarker(name: name, uuid: uuid)
-        return "Saved '\(name)'  (\(email), \(profile["organizationName"] as? String ?? "-"))" + note
+        store.setCurrentMarker(name: name, uuid: profile["accountUuid"] as? String ?? "")
+    }
+
+    func snapshotLiveUnlocked(configName: String, config: [String: Any], live: OAuthBlob,
+                              profiles: [AccountProfile]) async throws -> (SnapshotTarget, String) {
+        let configUuid = config["accountUuid"] as? String ?? ""
+        let target = Switcher.snapshotTarget(configUuid: configUuid, tokenUuid: await liveTokenUuid(live), profiles: profiles)
+        switch target {
+        case .config:
+            try await writeSnapshot(name: configName, oauthAccount: config, blob: live)
+            return (target, "")
+        case .owner(let owner):
+            try await Keychain.write(service: Keychain.savedService(owner), raw: live.raw)
+            return (target, "\nwarning: the live token belonged to '\(owner)', not '\(configName)' (a session still running as '\(owner)' refreshed it) - saved it to '\(owner)'; '\(configName)' kept its snapshot")
+        case .skip:
+            return (target, "\nwarning: the live token belonged to an account that is not saved - it was not snapshotted; '\(configName)' kept its snapshot")
+        }
     }
 
     // MARK: use
@@ -106,13 +156,18 @@ public struct Switcher {
             guard let target = profiles.first(where: { $0.name == name }) else {
                 throw SwitcherError("no saved account '\(name)' - see `claude-switcher list`")
             }
-            guard let targetBlob = await Keychain.readSaved(name), targetBlob.hasRefreshToken else {
-                throw SwitcherError("saved credentials for '\(name)' are missing or unreadable - log in as that account and run `claude-switcher save \(name)`")
+            let targetItem = await Keychain.inspectSaved(name)
+            guard let targetBlob = targetItem.blob, targetItem.snapshotProblem == nil else {
+                let problem = targetItem.snapshotProblem ?? "?"
+                if case .unreadable = targetItem { throw SwitcherError("saved credentials for '\(name)' could not be read (\(problem)) - try again") }
+                throw SwitcherError("saved credentials for '\(name)' are unusable (\(problem)) - log in as that account again: remove '\(name)', then `claude-switcher login \(name)`")
             }
             guard let targetProfile = store.profileRaw(name)?["oauthAccount"] as? [String: Any] else {
                 throw SwitcherError("profile file for '\(name)' is unreadable")
             }
 
+            var note = ""
+            var newLive = targetBlob
             if let cur = store.liveOAuthAccountRaw() {
                 let curUuid = cur["accountUuid"] as? String ?? ""
                 let curEmail = cur["emailAddress"] as? String ?? "unknown"
@@ -120,22 +175,24 @@ public struct Switcher {
                 if curName == nil && !force {
                     throw SwitcherError("current login (\(curEmail)) was never saved and would be lost. Run `claude-switcher save <name>` first, or `use \(name) --force` to discard it.")
                 }
-                if curName == name {
-                    _ = try await saveUnlocked(name: name)
-                    return "Already on '\(name)' (\(curEmail)) - snapshot refreshed"
-                }
-                if let curName, let live = await Keychain.readLive(), live.hasRefreshToken {
-                    _ = try await saveUnlocked(name: curName)
+                if let curName {
+                    if let live = await Keychain.readLive(), live.hasRefreshToken {
+                        let (saved, n) = try await snapshotLiveUnlocked(configName: curName, config: cur, live: live, profiles: profiles)
+                        if saved == .config && curName == name { return "Already on '\(name)' (\(curEmail)) - snapshot refreshed" }
+                        if saved == .owner(name) { newLive = live }
+                        note += n
+                    } else if curName == name {
+                        throw SwitcherError("no OAuth credentials in the live store - API-key logins cannot be snapshotted")
+                    }
                 }
             }
 
-            var note = ""
-            if let exp = targetBlob.refreshTokenExpiresAt, exp < Date() {
+            if let exp = newLive.refreshTokenExpiresAt, exp < Date() {
                 let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-                note = "\nwarning: refresh token for '\(name)' expired on \(f.string(from: exp)). If Claude asks you to log in, do so and run `claude-switcher save \(name)`."
+                note += "\nwarning: refresh token for '\(name)' expired on \(f.string(from: exp)). If Claude asks you to log in, do so and run `claude-switcher save \(name)`."
             }
             store.removeHop()
-            try await Keychain.write(service: Keychain.liveService, raw: targetBlob.raw)
+            try await Keychain.write(service: Keychain.liveService, raw: newLive.raw)
             try store.patchClaudeJSON(oauthAccount: targetProfile)
             store.setCurrentMarker(name: name, uuid: target.uuid ?? "")
             return "Switched to '\(name)'  (\(target.email), \(target.org))" + note
@@ -164,8 +221,9 @@ public struct Switcher {
                 throw SwitcherError("no saved account '\(old)'")
             }
             guard !store.profileExists(new) else { throw SwitcherError("'\(new)' already exists - remove it first or pick another name") }
-            guard let blob = await Keychain.readSaved(old), blob.hasRefreshToken else {
-                throw SwitcherError("saved credentials for '\(old)' are missing or not an OAuth blob")
+            let item = await Keychain.inspectSaved(old)
+            guard let blob = item.blob, item.snapshotProblem == nil else {
+                throw SwitcherError("saved credentials for '\(old)' are unusable (\(item.snapshotProblem ?? "?"))")
             }
             try await Keychain.write(service: Keychain.savedService(new), raw: blob.raw)
             profile["name"] = new
@@ -215,7 +273,11 @@ public struct Switcher {
         var fingerprint: String?
         if let live = await Keychain.readLive() {
             fingerprint = live.fingerprint
-            if let liveName, live.hasRefreshToken { _ = try await save(name: liveName) }
+            if let liveName, live.hasRefreshToken, let cfg = store.liveOAuthAccountRaw() {
+                _ = try await withLock {
+                    try await snapshotLiveUnlocked(configName: liveName, config: cfg, live: live, profiles: store.loadProfiles())
+                }
+            }
         }
         let ctx = LoginContext(scratch: scratch, servicesBefore: before, liveBeforeName: liveName, liveFingerprintBefore: fingerprint)
         try ctx.save()

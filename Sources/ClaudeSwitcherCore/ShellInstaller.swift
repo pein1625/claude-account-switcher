@@ -84,8 +84,11 @@ public enum ShellInstaller {
             else
               return $rc
             fi
-            "$cs" use "$next" || return $?
-            printf 'claude-as: resuming as %s\n' "$next"
+            if "$cs" use "$next"; then
+              printf 'claude-as: resuming as %s\n' "$next"
+            else
+              printf 'claude-as: switch to %s failed - resuming on the current account\n' "$next" >&2
+            fi
             set -- --continue
           done
         }
@@ -97,6 +100,12 @@ public enum ShellInstaller {
     public static func rcStatus(rc: URL) -> RCStatus {
         guard let s = try? String(contentsOf: rc, encoding: .utf8), let block = existingBlock(in: s) else { return .missing }
         return block.contains("claude-switcher") ? .ours : .plugin
+    }
+
+    public static func rcOutdated(rc: URL) -> Bool {
+        guard let s = try? String(contentsOf: rc, encoding: .utf8), let block = existingBlock(in: s),
+              block.contains("claude-switcher") else { return false }
+        return block != rcBlock()
     }
 
     public static func existingBlock(in text: String) -> String? {

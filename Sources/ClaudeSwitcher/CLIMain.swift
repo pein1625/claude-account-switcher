@@ -100,14 +100,15 @@ enum CLIMain {
                 // config account vs. the account the live Keychain token really belongs to
                 let live = store.liveOAuthAccount()
                 out("config: \(live?.emailAddress ?? "-") \(live?.accountUuid ?? "-") (\(switcher.currentName() ?? "unsaved"))")
-                guard let blob = await Keychain.readLive() else { return fail("no live Keychain item") }
+                let liveItem = await Keychain.inspect(service: Keychain.liveService)
+                guard let blob = liveItem.blob else { return fail("live Keychain item: \(liveItem.snapshotProblem ?? "?")") }
                 let p = await UsageClient().fetchProfile(token: blob.accessToken)
                 out("token:  \(p?.email ?? "-") \(p?.uuid ?? "-") HTTP \(p?.status ?? 0)\(blob.expiresAt.map { " · access token expires \(Format.clock($0))" } ?? "")")
                 if let p, let u = p.uuid, let c = live?.accountUuid { out(u == c ? "match" : "DRIFT: token and config disagree") }
             case "status", "--status":
                 await status(store: store, noAPI: rest.contains("--no-api"))
             case "doctor", "--doctor":
-                for item in await Doctor.run(store: store, usage: store.readUsageCache(), appBinary: appBinary, drift: nil) {
+                for item in await Doctor.run(store: store, usage: store.readUsageCache(), appBinary: appBinary) {
                     out("\(item.level == .ok ? "ok   " : item.level == .warn ? "WARN " : "FAIL ") \(item.text)")
                 }
                 out("PATH used: \(Environment.path)")
@@ -183,8 +184,8 @@ enum CLIMain {
         let client = UsageClient()
         if !noAPI {
             for p in profiles {
-                let blob = p.name == liveName ? await Keychain.readLive() : await Keychain.readSaved(p.name)
-                guard let blob else { usage[p.name] = AccountUsage(fetchedAt: now, source: .none, error: "no keychain item"); continue }
+                let item = p.name == liveName ? await Keychain.inspect(service: Keychain.liveService) : await Keychain.inspectSaved(p.name)
+                guard let blob = item.blob else { usage[p.name] = AccountUsage(fetchedAt: now, source: .none, error: item.snapshotProblem ?? "?"); continue }
                 if blob.isExpired(at: now) {
                     var u = usage[p.name] ?? AccountUsage(fetchedAt: now, source: .recorded)
                     u.error = "token expired \(Format.ago(blob.expiresAt ?? now)) ago"; usage[p.name] = u; continue

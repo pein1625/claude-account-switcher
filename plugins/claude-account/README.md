@@ -90,7 +90,7 @@ Claude Code has no built-in account fallback: at the limit it waits for the rese
 
 1. The statusline (see below) calls `claude-account quota` on every render. It records the live account's 5-hour usage in `~/.claude/accounts/<name>.quota`; at the threshold (`CLAUDE_ACCOUNT_HOP_AT`, default 90%) it picks the next account and writes its name to `~/.claude/accounts/.hop`.
 2. Next account = the saved account with the lowest recorded usage, where an account whose reset time has passed or that was never measured counts as 0%. Usage is recorded only while you run as that account, so `list` shows each account as of the last time it was live. If every other account is also above the threshold, nothing is flagged; the statusline keeps showing the reset time.
-3. When `claude` exits and `.hop` exists, `claude-as` runs `claude-account use <next>` (re-snapshotting the account you leave) and relaunches `claude --continue`: same conversation, other account. Your terminal shows `claude-as: resuming as <next>`.
+3. When `claude` exits and `.hop` exists, `claude-as` runs `claude-account use <next>` (re-snapshotting the account you leave) and relaunches `claude --continue`: same conversation, other account. Your terminal shows `claude-as: resuming as <next>`. If the switch fails (the target's snapshot lacks a token), it relaunches `claude --continue` on the current account instead, so the session is never dropped; `claude-account next` also skips such snapshots, and `claude-account doctor` lists each snapshot's state.
 
 Three levels of automation:
 

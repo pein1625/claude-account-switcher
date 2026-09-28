@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     @Published var plan: RestartPlan?
     @Published var decision: Decision = .hold("chưa có dữ liệu")
     @Published var drift: DriftInfo?
+    @Published var unusable: [String: String] = [:]
     @Published var lastError: String?
     @Published var busyText: String?
     @Published var lastPollAt: Date?
@@ -82,6 +83,7 @@ final class AppModel: ObservableObject {
         if let m = lastMarker { lastSwitchAt = m.mtime }
         eventsOffset = store.readEvents(from: 0).offset
         selfHealShim()
+        selfHealRC()
         refreshSetup()
         reloadProfiles()
         tasks = [
@@ -123,6 +125,18 @@ final class AppModel: ObservableObject {
         guard Self.runningFromBundle, ShellInstaller.shimStatus(appBinary: Self.appBinary) == .stale else { return }
         try? ShellInstaller.installShim(appBinary: Self.appBinary)
         store.log("shim rewritten -> \(Self.appBinary)")
+    }
+
+    private func selfHealRC() {
+        let rc = ShellInstaller.rcFile()
+        guard Self.runningFromBundle, !Self.smokeMode, ShellInstaller.rcOutdated(rc: rc) else { return }
+        do {
+            try ShellInstaller.installRC(rc: rc)
+            store.log("claude-as in \(rc.path) updated to v\(AppInfo.version) (backup kept)")
+            Notifier.post("Đã cập nhật claude-as trong \(rc.lastPathComponent)", "Terminal mở mới sẽ dùng bản mới. Session đang chạy giữ bản cũ tới khi mở lại terminal.")
+        } catch {
+            store.log("claude-as update in \(rc.path) failed: \(error.localizedDescription)")
+        }
     }
 
     func installAll(rc: Bool = true) async {
@@ -284,6 +298,11 @@ final class AppModel: ObservableObject {
         pendingExternalPlan = nil
         let moving = sessions.filter { $0.account.name == p.from || $0.account == .unknown }
         guard !moving.isEmpty else { return }
+        if let problem = unusable[p.to] {
+            store.log("external switch to \(p.to): no restarts planned, its snapshot is unusable (\(problem))")
+            Notifier.post("Account đã đổi sang \(p.to)", "Snapshot của \(p.to) hỏng (\(problem)) nên không restart session nào của \(p.from).")
+            return
+        }
         planRestarts(for: moving, to: p.to)
         Notifier.post("Account đã đổi sang \(p.to)", "\(moving.count) session của \(p.from) sẽ restart --continue ở cuối turn.")
     }
@@ -363,14 +382,17 @@ final class AppModel: ObservableObject {
             return
         }
         var next = usage
+        var bad = unusable.filter { name, _ in profiles.contains { $0.name == name } }
         var changed = false
         for p in profiles {
             let isLive = p.name == liveName
-            guard let blob = isLive ? await Keychain.readLive() : await Keychain.readSaved(p.name) else {
+            let item = isLive ? await Keychain.inspect(service: Keychain.liveService) : await Keychain.inspectSaved(p.name)
+            if !isLive { bad[p.name] = item.snapshotProblem }
+            guard let blob = item.blob else {
                 // Keep whatever was last measured (the UI shows it dimmed): an unreadable Keychain item says
                 // nothing about the account's windows, and the stale fetchedAt already keeps it out of the policy.
                 var u = next[p.name] ?? AccountUsage(fetchedAt: now, source: .none)
-                u.error = "không đọc được Keychain"
+                u.error = (isLive ? "Keychain live: " : "snapshot hỏng: ") + (item.snapshotProblem ?? "?")
                 u.tokenExpiresAt = nil
                 next[p.name] = u
                 changed = true
@@ -414,6 +436,7 @@ final class AppModel: ObservableObject {
             usage = next
             store.writeUsageCache(next)
         }
+        if bad != unusable { unusable = bad }
         lastPollAt = now
         reloadProfiles()
         evaluate()
@@ -435,7 +458,8 @@ final class AppModel: ObservableObject {
     // MARK: policy
 
     func states(now: Date = Date()) -> [AccountState] {
-        profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: records[$0.name], forcedExhaustedUntil: forcedExhausted[$0.name]) }
+        profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: records[$0.name], forcedExhaustedUntil: forcedExhausted[$0.name],
+                                    unusable: unusable[$0.name] != nil) }
     }
 
     func effective(_ name: String, now: Date = Date()) -> Effective? {
@@ -533,12 +557,17 @@ final class AppModel: ObservableObject {
             let out = try await switcher.use(name)
             let now = Date()
             store.appendSwitch(SwitchEvent(at: now, from: from, to: name, by: auto ? "auto" : "app"))
-            store.log("switch \(from ?? "?") -> \(name) by \(auto ? "auto" : "user")\(reason.map { " (\($0))" } ?? ""): \(out.split(separator: "\n").first ?? "")")
+            store.log("switch \(from ?? "?") -> \(name) by \(auto ? "auto" : "user")\(reason.map { " (\($0))" } ?? ""): \(out.replacingOccurrences(of: "\n", with: " | "))")
+            let warnings = out.split(separator: "\n").dropFirst().joined(separator: " ")
             lastSwitchAt = now
             if auto { lastHopAt = now }
-            lastError = nil
+            lastError = warnings.isEmpty ? nil : warnings
             reloadProfiles()
             lastMarker = store.currentMarker()
+            pendingExternalPlan = nil
+            drift = nil
+            lastDriftCheck = .distantPast
+            retargetPlan()
             if AppSettings.restartSessions, let from {
                 let moving = sessions.filter { $0.account.name == from || $0.account == .unknown }
                 planRestarts(for: moving, to: name)
@@ -643,6 +672,7 @@ final class AppModel: ObservableObject {
         do {
             _ = try await switcher.remove(name)
             usage.removeValue(forKey: name)
+            unusable.removeValue(forKey: name)
             store.writeUsageCache(usage)
             store.log("removed \(name)")
             reloadProfiles()
@@ -660,6 +690,7 @@ final class AppModel: ObservableObject {
         do {
             let out = try await switcher.rename(old, to: new)
             if let u = usage.removeValue(forKey: old) { usage[new] = u }
+            if let b = unusable.removeValue(forKey: old) { unusable[new] = b }
             store.writeUsageCache(usage)
             if let f = forcedExhausted.removeValue(forKey: old) { forcedExhausted[new] = f }
             if let f = forcedAt.removeValue(forKey: old) { forcedAt[new] = f }
@@ -683,19 +714,37 @@ final class AppModel: ObservableObject {
     /// Drift repair: the live token really belongs to X, config says Y. Save the live blob back into X's
     /// snapshot (its freshest tokens), then put Y's snapshot into the live item so both agree again.
     func realign() async {
-        guard let d = drift, let configName = d.configName else { return }
+        guard drift != nil else { return }
         busyText = "Đang sửa lệch…"
         defer { busyText = nil }
+        let store = store, client = client
         do {
-            try await switcher.withLock {
+            let result: String = try await switcher.withLock {
                 guard let liveBlob = await Keychain.readLive() else { throw SwitcherError("không đọc được live Keychain") }
-                if let owner = d.tokenAccountName {
-                    try await Keychain.write(service: Keychain.savedService(owner), raw: liveBlob.raw)
+                let profiles = store.loadProfiles()
+                guard let cfg = store.liveOAuthAccount(), let cfgUuid = cfg.accountUuid,
+                      let configName = store.liveName(profiles: profiles, live: cfg) else {
+                    throw SwitcherError("login trong ~/.claude.json chưa được lưu, không biết đưa token của account nào vào live")
                 }
-                guard let target = await Keychain.readSaved(configName) else { throw SwitcherError("snapshot của \(configName) trống") }
+                guard let tokenOwner = await client.fetchProfile(token: liveBlob.accessToken),
+                      (200..<300).contains(tokenOwner.status), let tokenUuid = tokenOwner.uuid else {
+                    throw SwitcherError("chưa kiểm được token live thuộc account nào (mạng hoặc token hết hạn) - thử lại sau")
+                }
+                guard tokenUuid != cfgUuid else { return "no drift any more: live token belongs to \(configName)" }
+                let item = await Keychain.inspectSaved(configName)
+                guard let target = item.blob, item.snapshotProblem == nil else {
+                    throw SwitcherError("snapshot của \(configName) không dùng được (\(item.snapshotProblem ?? "?")) → Xoá rồi Thêm account \(configName) lại")
+                }
+                if !target.isExpired(at: Date()), let p = await client.fetchProfile(token: target.accessToken),
+                   (200..<300).contains(p.status), let u = p.uuid, u != cfgUuid {
+                    throw SwitcherError("snapshot của \(configName) đang giữ token của account khác (\(p.email ?? u)) → Xoá rồi Thêm account \(configName) lại")
+                }
+                let owner = profiles.first { $0.uuid == tokenUuid }?.name
+                if let owner { try await Keychain.write(service: Keychain.savedService(owner), raw: liveBlob.raw) }
                 try await Keychain.write(service: Keychain.liveService, raw: target.raw)
+                return "live token (\(owner ?? tokenOwner.email ?? tokenUuid)) \(owner == nil ? "discarded (not saved)" : "saved back"), \(configName) restored to live"
             }
-            store.log("realigned: live token (\(d.tokenAccountName ?? d.tokenEmail ?? "?")) saved back, \(configName) restored to live")
+            store.log("realigned: \(result)")
             drift = nil
             lastDriftCheck = .distantPast
             lastError = nil
@@ -733,7 +782,7 @@ final class AppModel: ObservableObject {
     }
 
     func runDoctor() async {
-        doctorItems = await Doctor.run(store: store, usage: usage, appBinary: Self.appBinary, drift: drift?.summary)
+        doctorItems = await Doctor.run(store: store, usage: usage, appBinary: Self.appBinary)
     }
 }
 

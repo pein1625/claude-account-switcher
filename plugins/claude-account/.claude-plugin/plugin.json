@@ -1,7 +1,7 @@
 {
   "name": "claude-account",
   "displayName": "Claude account switcher",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Switch between Claude Code subscription accounts without re-login. Snapshots each login (macOS Keychain tokens + oauthAccount profile) and swaps the live one in under a second. Ships the claude-account CLI, the claude-as launcher that hops to the next account when the 5h quota runs out (opt-in fully automatic), a statusline snippet, and an in-session skill.",
   "author": {
     "name": "DLS team"
