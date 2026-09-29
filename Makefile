@@ -7,7 +7,7 @@ VERSION  = $(shell sed -n 's/.*static let version = "\(.*\)".*/\1/p' Sources/Cla
 DIST     = dist/$(APP)-$(VERSION).zip
 DMG      = dist/$(APP)-$(VERSION).dmg
 
-.PHONY: all build test app icon install run status doctor clean universal dist dmg dmg-plain uninstall release publish-file
+.PHONY: all build test app icon install run status doctor clean universal dist dmg dmg-plain uninstall release publish-file ship
 
 all: app
 
@@ -108,6 +108,24 @@ publish-file: dmg
 	cp "$(DMG)" "$(DMG).sha256" releases/
 	printf '%s\n' "$(VERSION)" > releases/latest
 	@echo "now: git add releases && git commit -m 'Release $(VERSION) dmg' && git push"
+
+# From a committed app change to every install path in one step: checks, the dmg, releases/ (the in-app updater's
+# second source and install.sh's fallback), the README download link, a release commit pushed to main, and the
+# GitHub Release that install.sh and the updater read first. Refuses a dirty tree, another branch, and a version
+# that is already out (bump AppInfo.version in Sources/ClaudeSwitcherCore/Models.swift).
+ship: test
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || { echo "ship: not on main"; exit 1; }
+	@git diff --quiet HEAD -- . || { echo "ship: commit the app change first"; exit 1; }
+	@[ "$$(cat releases/latest 2>/dev/null)" != "$(VERSION)" ] || { echo "ship: $(VERSION) is already published - bump AppInfo.version"; exit 1; }
+	@! gh release view "v$(VERSION)" >/dev/null 2>&1 || { echo "ship: GitHub Release v$(VERSION) already exists"; exit 1; }
+	$(MAKE) publish-file
+	sed -i '' -E 's#releases/ClaudeSwitcher-[0-9.]+\.dmg#releases/ClaudeSwitcher-$(VERSION).dmg#; s#Phiên bản [0-9.]+ #Phiên bản $(VERSION) #' README.md
+	git add releases README.md
+	git commit -q -m "Release $(VERSION) dmg"
+	git push -q origin main
+	gh release create "v$(VERSION)" "$(DMG)" "$(DMG).sha256" --title "Claude Switcher $(VERSION)" --latest --generate-notes \
+	  --notes "Install: \`curl -fsSL https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/scripts/install.sh | bash\`  (sha256 of the dmg in the .sha256 asset). Already installed: menu › Cập nhật."
+	@echo "shipped $(VERSION): releases/, README link, GitHub Release v$(VERSION)"
 
 # Publish a GitHub release with the dmg; scripts/install.sh downloads from here.
 release: dmg

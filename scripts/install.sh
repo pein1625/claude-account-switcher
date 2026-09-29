@@ -17,23 +17,34 @@ APP="ClaudeSwitcher.app"
 major=$(sw_vers -productVersion | cut -d. -f1)
 [ "$major" -ge 14 ] || { echo "Claude Switcher needs macOS 14 or newer (this is $(sw_vers -productVersion))" >&2; exit 1; }
 
+# dotted versions: exit 0 when $1 is higher than $2 (an empty $2 counts as 0)
+newer() {
+  awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = n > m ? n : m
+    for (i = 1; i <= k; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 1 }'
+}
+
 if [ "$VERSION" = latest ]; then
   api="https://api.github.com/repos/$REPO/releases/latest"
 else
   api="https://api.github.com/repos/$REPO/releases/tags/v$VERSION"
 fi
-url=""
+url="" gh_ver=""
 if json=$(curl -fsSL "$api" 2>/dev/null); then
   url=$(printf '%s' "$json" | grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | sed -E 's/.*"(https[^"]*)"$/\1/')
+  gh_ver=$(printf '%s' "$json" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed -E 's/.*"v?([^"]*)"$/\1/')
 fi
-if [ -z "$url" ]; then
-  # no GitHub Release (yet): the dmg is also committed under releases/ in the repo
-  raw="https://raw.githubusercontent.com/$REPO/main/releases"
-  ver="$VERSION"
-  [ "$ver" = latest ] && ver=$(curl -fsSL "$raw/latest" 2>/dev/null | tr -d '[:space:]')
-  [ -n "$ver" ] || { echo "cannot find a build to download for $REPO (no release, no releases/latest)" >&2; exit 1; }
+# the dmg is also committed under releases/ in the repo; for "latest" the higher of the two sources wins
+# (a stale GitHub Release must not shadow newer builds published only there)
+raw="https://raw.githubusercontent.com/$REPO/main/releases"
+ver="$VERSION"
+if [ "$ver" = latest ]; then
+  ver=$(curl -fsSL "$raw/latest" 2>/dev/null | tr -d '[:space:]' || true)
+  [ -n "$ver" ] && [ -n "$url" ] && ! newer "$ver" "$gh_ver" && ver=""
+fi
+if [ -n "$ver" ] && { [ -z "$url" ] || [ "$VERSION" = latest ]; }; then
   url="$raw/ClaudeSwitcher-$ver.dmg"
 fi
+[ -n "$url" ] || { echo "cannot find a build to download for $REPO (no release, no releases/latest)" >&2; exit 1; }
 
 tmp=$(mktemp -d)
 mnt=""
