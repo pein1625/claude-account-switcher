@@ -15,6 +15,7 @@ enum LoginPhase: Equatable {
 struct LoginState: Equatable {
     var name: String
     var email: String?
+    var relogin = false
     var phase: LoginPhase = .starting
     var url: URL?
     var openedIn: String?
@@ -39,12 +40,12 @@ final class LoginFlow {
 
     var name: String { state.name }
 
-    init(name: String, email: String?, switcher: Switcher, privateWindow: Bool, onChange: @escaping (LoginState) -> Void) async throws {
+    init(name: String, email: String?, relogin: Bool = false, switcher: Switcher, privateWindow: Bool, onChange: @escaping (LoginState) -> Void) async throws {
         self.switcher = switcher
         self.privateWindow = privateWindow
         self.onChange = onChange
-        state = LoginState(name: name, email: email)
-        ctx = try await switcher.loginPrepare(name: name)
+        state = LoginState(name: name, email: email, relogin: relogin)
+        ctx = try await switcher.loginPrepare(name: name, relogin: relogin)
         guard let claude = Environment.which("claude") else {
             try? FileManager.default.removeItem(at: ctx.scratch)
             throw SwitcherError("không thấy `claude` trên PATH — thêm đường dẫn trong Cài đặt › Shell › PATH thêm")

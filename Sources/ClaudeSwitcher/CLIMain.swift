@@ -5,7 +5,8 @@ import ClaudeSwitcherCore
 /// `claude-switcher <command>` - the same operations the menu bar app performs, from a terminal or a script.
 enum CLIMain {
     static let commands: Set<String> = [
-        "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login", "login-prepare", "login-finish",
+        "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login", "relogin", "login-prepare", "login-finish",
+        "realign",
         "status", "doctor", "hook", "install", "uninstall", "update", "version", "help", "whoami",
         "--version", "-v", "--help", "-h", "--status", "--doctor", "--uninstall",
     ]
@@ -25,13 +26,18 @@ enum CLIMain {
       claude-switcher login <name> [--email <email>]
                                               sign in to ANOTHER account in a scratch config dir and snapshot it;
                                               the current login is not touched (opens the browser once)
-      claude-switcher login-prepare <name>    step 1 of the same flow for scripts: prints the scratch dir; then run
+      claude-switcher relogin <name>          sign in again as a saved account whose snapshot died (same flow as
+                                              login; the browser must sign in as that account)
+      claude-switcher login-prepare [--relogin] <name>
+                                              step 1 of the same flow for scripts: prints the scratch dir; then run
                                               CLAUDE_CONFIG_DIR=<dir> claude auth login, then login-finish
       claude-switcher login-finish <name> <dir>
+      claude-switcher realign                 the live token belongs to another account than ~/.claude.json says:
+                                              file it under its owner and restore the configured account
       claude-switcher remove <name>           delete a saved snapshot (live login untouched)
       claude-switcher rename <old> <new>      rename a snapshot
       claude-switcher names                   bare names, for shell completion
-      claude-switcher next                    account a hop would go to now; exit 1 when none has room
+      claude-switcher next                    account a hop would go to now (usable snapshots only); exit 1 when none
       claude-switcher status [--no-api]       accounts, usage, decision, running sessions
       claude-switcher doctor                  dependency + store + shell integration check
       claude-switcher update [--check]        install the newest release (--check only reports)
@@ -42,6 +48,7 @@ enum CLIMain {
     Environment:
       CLAUDE_ACCOUNT_DIR            where snapshots live (default ~/.claude/accounts)
       CLAUDE_ACCOUNT_LIVE_SERVICE   macOS Keychain service Claude Code writes to (default "Claude Code-credentials")
+      CLAUDE_SWITCHER_NO_VERIFY=1   never ask Anthropic whose a token is (save/use then trust ~/.claude.json)
     """
 
     static func run(_ args: [String]) async -> Int32 {
@@ -68,7 +75,12 @@ enum CLIMain {
                 out("\(c.name ?? "(unsaved)")\t\(c.email)\t\(c.org)")
             case "next":
                 let now = Date()
-                let states = switcher.profiles().map { AccountState(name: $0.name, usage: store.readUsageCache()[$0.name], record: store.quotaRecord($0.name)) }
+                let cache = store.readUsageCache()
+                var states: [AccountState] = []
+                for p in switcher.profiles() {
+                    let problem = p.name == switcher.currentName() ? nil : await Keychain.inspect(service: Keychain.savedService(p.name)).problem
+                    states.append(AccountState(name: p.name, usage: cache[p.name], record: store.quotaRecord(p.name), blocked: problem?.text))
+                }
                 guard let best = HopPolicy.ranked(states, excluding: switcher.currentName(), t: AppSettings.thresholds, now: now, maxAge: 300).first else {
                     return fail("no other account below \(Int(AppSettings.hopAt))% 5h usage")
                 }
@@ -85,11 +97,15 @@ enum CLIMain {
                 guard rest.count == 2 else { return fail("usage: rename <old> <new>") }
                 out(try await switcher.rename(rest[0], to: rest[1]))
             case "login":
-                return try await login(rest, switcher: switcher)
+                return try await login(rest, switcher: switcher, relogin: false)
+            case "relogin":
+                return try await login(rest, switcher: switcher, relogin: true)
+            case "realign":
+                out(try await switcher.realign())
             case "login-prepare":
                 // prints only the scratch dir on stdout; the caller runs `CLAUDE_CONFIG_DIR=<dir> claude auth login` next
-                guard let name = rest.first else { return fail("usage: login-prepare <name>") }
-                let ctx = try await switcher.loginPrepare(name: name)
+                guard let name = rest.first(where: { !$0.hasPrefix("-") }) else { return fail("usage: login-prepare [--relogin] <name>") }
+                let ctx = try await switcher.loginPrepare(name: name, relogin: rest.contains("--relogin"))
                 FileHandle.standardError.write(Data("Signing in inside a scratch config dir; the current login (\(switcher.current()?.email ?? "none")) is not touched.\n".utf8))
                 out(ctx.scratch.path)
             case "login-finish":
@@ -153,7 +169,7 @@ enum CLIMain {
     /// Interactive. `claude auth login` is a TUI: it must run in the terminal's foreground process group, and a
     /// Foundation `Process` child does not (it gets SIGTTOU on raw mode and stops silently). So after preparing
     /// the scratch dir this process execs bash on the same script the menu's Terminal window uses.
-    static func login(_ rest: [String], switcher: Switcher) async throws -> Int32 {
+    static func login(_ rest: [String], switcher: Switcher, relogin: Bool) async throws -> Int32 {
         var name: String?
         var email: String?
         var i = 0
@@ -162,8 +178,9 @@ enum CLIMain {
             if rest[i].hasPrefix("-") { throw SwitcherError("unknown option '\(rest[i])'") }
             name = rest[i]; i += 1
         }
-        guard let name else { throw SwitcherError("usage: login <name> [--email <email>]") }
-        let ctx = try await switcher.loginPrepare(name: name)
+        guard let name else { throw SwitcherError("usage: \(relogin ? "relogin" : "login") <name> [--email <email>]") }
+        if relogin, email == nil { email = switcher.profiles().first { $0.name == name }?.oauthAccount.emailAddress }
+        let ctx = try await switcher.loginPrepare(name: name, relogin: relogin)
         let script = LoginLauncher.loginScript(cli: appBinary, name: name, email: email, scratch: ctx.scratch.path)
         let file = ctx.scratch.appendingPathComponent("run.sh")
         try script.write(to: file, atomically: true, encoding: .utf8)

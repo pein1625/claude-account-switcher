@@ -16,13 +16,17 @@ public struct OAuthBlob {
         SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Claude Code can sign in with it. `claude-account`'s `is_oauth_blob` applies the same rule: a blob that
+    /// only one of the two tools accepts lets the CLI switch into a login the app then calls unreadable.
+    public var isComplete: Bool { !accessToken.isEmpty && hasRefreshToken }
+
+    /// Any `claudeAiOauth` object parses, empty tokens included; `isComplete` says whether it can be used.
     public init?(raw: String) {
         guard let data = raw.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = root["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String, !token.isEmpty else { return nil }
+              let oauth = root["claudeAiOauth"] as? [String: Any] else { return nil }
         self.raw = raw
-        self.accessToken = token
+        self.accessToken = (oauth["accessToken"] as? String) ?? ""
         self.hasRefreshToken = !((oauth["refreshToken"] as? String) ?? "").isEmpty
         self.expiresAt = OAuthBlob.ms(oauth["expiresAt"])
         self.refreshTokenExpiresAt = OAuthBlob.ms(oauth["refreshTokenExpiresAt"])
@@ -41,6 +45,42 @@ public struct OAuthBlob {
     }
 }
 
+/// Why a Keychain item cannot be switched to or measured with.
+public enum CredentialProblem: Equatable {
+    case missing
+    case unreadable(String)
+    case notOAuth
+    case incomplete
+    /// Anthropic answered 401 for an access token that has not expired: revoked or superseded by a newer login.
+    case rejected(Int)
+    /// The token works but belongs to another account than the snapshot's name says.
+    case wrongOwner(String)
+
+    /// For the menu (Vietnamese, like the rest of the UI).
+    public var text: String {
+        switch self {
+        case .missing: return "không có token trong Keychain"
+        case .unreadable(let why): return "không đọc được Keychain (\(why))"
+        case .notOAuth: return "Keychain item không phải token OAuth"
+        case .incomplete: return "token trong Keychain thiếu access/refresh token"
+        case .rejected(let code): return "token bị Anthropic từ chối (HTTP \(code))"
+        case .wrongOwner(let who): return "snapshot đang giữ token của \(who)"
+        }
+    }
+
+    /// For CLI errors: completes "saved credentials for 'x' ...".
+    public var detail: String {
+        switch self {
+        case .missing: return "are missing from the Keychain"
+        case .unreadable(let why): return "cannot be read from the Keychain (\(why))"
+        case .notOAuth: return "are not a Claude Code OAuth blob"
+        case .incomplete: return "are incomplete (no access or refresh token)"
+        case .rejected(let code): return "were rejected by Anthropic (HTTP \(code))"
+        case .wrongOwner(let who): return "hold the token of \(who)"
+        }
+    }
+}
+
 /// All Keychain access goes through `/usr/bin/security`, exactly like Claude Code and `claude-account` do,
 /// so the item ACLs already trust the caller and no permission dialog appears.
 public enum Keychain {
@@ -53,11 +93,27 @@ public enum Keychain {
 
     public static func savedService(_ name: String) -> String { storePrefix + name }
 
+    /// Only a complete blob: callers treat nil as "nothing usable here".
     public static func read(service: String) async -> OAuthBlob? {
-        guard let r = try? await Shell.run("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], timeout: 20),
-              r.ok else { return nil }
-        return OAuthBlob(raw: r.trimmedOut)
+        let r = await inspect(service: service)
+        return r.problem == nil ? r.blob : nil
     }
+
+    /// The blob plus, when it cannot be used, why - for the menu, `doctor` and error messages.
+    public static func inspect(service: String) async -> (blob: OAuthBlob?, problem: CredentialProblem?) {
+        let r: ShellResult
+        do {
+            r = try await Shell.run("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], timeout: 20)
+        } catch {
+            return (nil, .unreadable(error.localizedDescription))
+        }
+        guard r.ok else { return (nil, r.status == itemNotFound ? .missing : .unreadable("security exit \(r.status)")) }
+        guard let blob = OAuthBlob(raw: r.trimmedOut) else { return (nil, .notOAuth) }
+        return (blob, blob.isComplete ? nil : .incomplete)
+    }
+
+    /// `security` exit status for errSecItemNotFound.
+    static let itemNotFound: Int32 = 44
 
     public static func readLive() async -> OAuthBlob? { await read(service: liveService) }
     public static func readSaved(_ name: String) async -> OAuthBlob? { await read(service: savedService(name)) }

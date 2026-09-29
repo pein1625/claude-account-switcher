@@ -7,7 +7,7 @@ struct AppSettings {
 
     enum Key: String {
         case autoSwitch, hopAt, sevenDayAt, pollSeconds, notify, terminalApp, restartSessions, extraPath, cooldownMinutes,
-             autoSaveLogin, loginPrivateWindow, loginViaTerminal, pollMigrated300
+             autoSaveLogin, loginPrivateWindow, loginViaTerminal, pollMigrated300, prefer7d, sevenDayMargin, nearResetHours
     }
 
     static func register() {
@@ -24,6 +24,9 @@ struct AppSettings {
             Key.autoSaveLogin.rawValue: true,
             Key.loginPrivateWindow.rawValue: true,
             Key.loginViaTerminal.rawValue: false,
+            Key.prefer7d.rawValue: true,
+            Key.sevenDayMargin.rawValue: 10,
+            Key.nearResetHours.rawValue: 24,
         ])
         migratePollInterval()
         Environment.extraPath = defaults.string(forKey: Key.extraPath.rawValue) ?? ""
@@ -49,7 +52,13 @@ struct AppSettings {
     static var terminalApp: String { defaults.string(forKey: Key.terminalApp.rawValue) ?? "Terminal" }
     static var restartSessions: Bool { defaults.bool(forKey: Key.restartSessions.rawValue) }
     static var cooldown: TimeInterval { TimeInterval(defaults.integer(forKey: Key.cooldownMinutes.rawValue) * 60) }
-    static var thresholds: Thresholds { Thresholds(hopAt: hopAt, sevenDayAt: sevenDayAt) }
+    static var prefer7d: Bool { defaults.bool(forKey: Key.prefer7d.rawValue) }
+    static var sevenDayMargin: Double { Double(max(1, defaults.integer(forKey: Key.sevenDayMargin.rawValue))) }
+    static var nearResetHours: Double { Double(max(0, defaults.integer(forKey: Key.nearResetHours.rawValue))) }
+    static var thresholds: Thresholds {
+        Thresholds(hopAt: hopAt, sevenDayAt: sevenDayAt, prefer7d: prefer7d, sevenDayMargin: sevenDayMargin,
+                   nearResetHours: nearResetHours)
+    }
     static var autoSaveLogin: Bool { defaults.bool(forKey: Key.autoSaveLogin.rawValue) }
     static var loginPrivateWindow: Bool { defaults.bool(forKey: Key.loginPrivateWindow.rawValue) }
     static var loginViaTerminal: Bool { defaults.bool(forKey: Key.loginViaTerminal.rawValue) }

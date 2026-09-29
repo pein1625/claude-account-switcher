@@ -57,10 +57,22 @@ final class AppModel: ObservableObject {
     private var forcedAt: [String: Date] = [:]
     private var lastHopAt: Date?
     private var lastSwitchAt: Date?
+    /// The user chose the live account (menu, terminal `use` that held, /login): the 7d balance waits an hour.
+    private var lastManualSwitchAt: Date?
+    /// Live account after the last switch that held; the quota-ping cron's A→B→A flip ends where it began.
+    private var settledLive: String?
     private var lastMarker: AccountStore.CurrentMarker?
     private var eventsOffset: UInt64 = 0
     private var lastAlive: Date = .distantPast
-    private var lastDriftCheck: Date = .distantPast
+    /// Why an account's snapshot cannot be switched to, keyed by name, with the blob fingerprint it was judged on:
+    /// a new snapshot (relogin, sync, CLI save) clears the verdict.
+    @Published var credentialIssues: [String: CredentialProblem] = [:]
+    private var issueFingerprint: [String: String] = [:]
+    /// Snapshot fingerprints whose owner the profile endpoint already confirmed.
+    private var verifiedFingerprint: [String: String] = [:]
+    private var hopFailedAt: [String: Date] = [:]
+    private var lastSyncedFingerprint: String?
+    private var lastLiveSync: Date = .distantPast
     private var lastNotifiedExhausted: Date = .distantPast
     private var switchInFlight = false
     /// An external `use` (claude-as loop, CLI) strands the old account's sessions just like an app switch
@@ -82,8 +94,10 @@ final class AppModel: ObservableObject {
         if let m = lastMarker { lastSwitchAt = m.mtime }
         eventsOffset = store.readEvents(from: 0).offset
         selfHealShim()
+        selfHealRC()
         refreshSetup()
         reloadProfiles()
+        settledLive = liveName
         tasks = [
             Task { [weak self] in
                 while !Task.isCancelled { await self?.tick(); try? await Task.sleep(for: .seconds(2)) }
@@ -123,6 +137,18 @@ final class AppModel: ObservableObject {
         guard Self.runningFromBundle, ShellInstaller.shimStatus(appBinary: Self.appBinary) == .stale else { return }
         try? ShellInstaller.installShim(appBinary: Self.appBinary)
         store.log("shim rewritten -> \(Self.appBinary)")
+    }
+
+    /// An rc block written by an older version of this app is replaced by the current one (backup kept); the
+    /// plugin's block is left alone.
+    private func selfHealRC() {
+        guard Self.runningFromBundle, !Self.smokeMode else { return }
+        let rc = ShellInstaller.rcFile()
+        guard ShellInstaller.rcStatus(rc: rc) == .ours, !ShellInstaller.rcIsCurrent(rc: rc) else { return }
+        do {
+            try ShellInstaller.installRC(rc: rc)
+            store.log("claude-as block in \(rc.path) updated to this version")
+        } catch { store.log("claude-as block update failed: \(error.localizedDescription)") }
     }
 
     func installAll(rc: Bool = true) async {
@@ -193,6 +219,8 @@ final class AppModel: ObservableObject {
         detectExternalSwitch(now: now)
         settleExternalPlan(now: now)
         prunePlan()
+        followLive(now: now)
+        store.pruneSessionMarkers(now: now)
         ingestEvents(now: now)
         pollInterval = AppSettings.pollSeconds
         refreshSetup()
@@ -235,6 +263,8 @@ final class AppModel: ObservableObject {
             store.appendSwitch(SwitchEvent(at: now, from: lastKnownLiveName, to: name, by: "login"))
             lastMarker = store.currentMarker()          // not an external `use`: no restart plan for old sessions
             lastSwitchAt = now
+            lastManualSwitchAt = now
+            settledLive = name
             lastKnownLiveName = name
             store.log("auto-saved new login as '\(name)': \(out.split(separator: "\n").first ?? "")")
             reloadProfiles()
@@ -273,7 +303,7 @@ final class AppModel: ObservableObject {
             store.log("external switch \(prev.name) -> \(m.name)")
             lastSwitchAt = m.mtime ?? now
             retargetPlan()
-            pendingExternalPlan = AppSettings.restartSessions ? (from: prev.name, to: m.name, at: now) : nil
+            pendingExternalPlan = (from: prev.name, to: m.name, at: now)
         }
     }
 
@@ -282,6 +312,10 @@ final class AppModel: ObservableObject {
         guard liveName == p.to else { pendingExternalPlan = nil; return }
         guard now.timeIntervalSince(p.at) >= 30 else { return }
         pendingExternalPlan = nil
+        // held for the settle window and landed somewhere new: a terminal `use`, not the quota-ping cron's flip
+        if p.to != settledLive { lastManualSwitchAt = p.at }
+        settledLive = p.to
+        guard AppSettings.restartSessions else { return }
         let moving = sessions.filter { $0.account.name == p.from || $0.account == .unknown }
         guard !moving.isEmpty else { return }
         planRestarts(for: moving, to: p.to)
@@ -301,12 +335,13 @@ final class AppModel: ObservableObject {
         plan = p
     }
 
-    /// Sessions in the plan should land on whatever is live now; sessions already on the live account drop out.
+    /// Sessions in the plan should land on whatever is live now; sessions already on the live account drop out
+    /// (a switch back to the account they were planned away from must not restart them for nothing).
     private func retargetPlan() {
         guard var p = store.readRestartPlan(), let live = liveName else { return }
         p.to = live
         for (pid, _) in p.pids {
-            if let s = sessions.first(where: { String($0.pid) == pid }), s.account.name == live, !s.account.isAssumed {
+            if let s = sessions.first(where: { String($0.pid) == pid }), s.account.name == live {
                 p.pids.removeValue(forKey: pid)
             } else {
                 p.pids[pid] = live
@@ -314,6 +349,15 @@ final class AppModel: ObservableObject {
         }
         store.writeRestartPlan(p.pids.isEmpty ? nil : p)
         plan = p.pids.isEmpty ? nil : p
+        store.log("restart plan retargeted -> \(live): \(p.pids.keys.sorted())")
+    }
+
+    /// A plan only ever moves sessions onto the live account. When the live account changed some other way
+    /// (`/login`, a switch the marker did not show), retarget once things have settled.
+    private func followLive(now: Date) {
+        guard let p = plan, let live = liveName, p.to != live else { return }
+        if let s = lastSwitchAt, now.timeIntervalSince(s) < 30 { return }
+        retargetPlan()
     }
 
     private func ingestEvents(now: Date) {
@@ -366,16 +410,19 @@ final class AppModel: ObservableObject {
         var changed = false
         for p in profiles {
             let isLive = p.name == liveName
-            guard let blob = isLive ? await Keychain.readLive() : await Keychain.readSaved(p.name) else {
-                // Keep whatever was last measured (the UI shows it dimmed): an unreadable Keychain item says
-                // nothing about the account's windows, and the stale fetchedAt already keeps it out of the policy.
+            let (read, problem) = await Keychain.inspect(service: isLive ? Keychain.liveService : Keychain.savedService(p.name))
+            guard let blob = read, problem == nil else {
+                // Keep whatever was last measured (the UI shows it dimmed): an unusable Keychain item says nothing
+                // about the account's windows, and the stale fetchedAt already keeps it out of the policy.
                 var u = next[p.name] ?? AccountUsage(fetchedAt: now, source: .none)
-                u.error = "không đọc được Keychain"
+                u.error = problem?.text ?? "không đọc được Keychain"
                 u.tokenExpiresAt = nil
                 next[p.name] = u
+                setIssue(p.name, problem ?? .unreadable("?"), fingerprint: read?.fingerprint ?? "")
                 changed = true
                 continue
             }
+            if let fp = issueFingerprint[p.name], fp != blob.fingerprint { setIssue(p.name, nil, fingerprint: nil) }
             if blob.isExpired(at: now) {
                 var u = next[p.name] ?? AccountUsage(fetchedAt: now, source: .recorded)
                 u.error = "token hết hạn, dùng số đã ghi"
@@ -387,6 +434,7 @@ final class AppModel: ObservableObject {
             }
             var u = await client.fetchUsage(token: blob.accessToken, now: now)
             u.tokenExpiresAt = blob.expiresAt
+            if u.httpStatus == 401 { setIssue(p.name, .rejected(401), fingerprint: blob.fingerprint) }
             if u.isFreshAPI, let five = u.fiveHour {
                 // The payload does not always carry every window; a missing one means "unchanged", not "gone",
                 // so the last reading stays on screen instead of the 7d row blinking out.
@@ -405,9 +453,10 @@ final class AppModel: ObservableObject {
             }
             next[p.name] = u
             changed = true
-            if isLive, now.timeIntervalSince(lastDriftCheck) > 600 {
-                lastDriftCheck = now
-                await checkDrift(liveToken: blob.accessToken)
+            if isLive {
+                await syncLive(blob, now: now)
+            } else if u.isFreshAPI, verifiedFingerprint[p.name] != blob.fingerprint {
+                await verifySnapshot(p, blob)
             }
         }
         if changed {
@@ -419,23 +468,72 @@ final class AppModel: ObservableObject {
         evaluate()
     }
 
-    private func checkDrift(liveToken: String) async {
-        guard let profile = await client.fetchProfile(token: liveToken), (200..<300).contains(profile.status),
-              let uuid = profile.uuid, let cfgUuid = liveAccount?.accountUuid else { drift = nil; return }
-        if uuid == cfgUuid { drift = nil; return }
-        let owner = profiles.first { $0.uuid == uuid }
-        let info = DriftInfo(tokenEmail: profile.email, tokenUuid: uuid, tokenAccountName: owner?.name, configName: liveName)
-        if info != drift {
-            store.log("DRIFT: live token belongs to \(owner?.name ?? profile.email ?? uuid), config says \(liveName ?? "?")")
-            Notifier.post("Keychain lệch với ~/.claude.json", "Token live thuộc \(owner?.name ?? profile.email ?? "?") nhưng config nói \(liveName ?? "?"). Mở Claude Switcher → Sửa lệch.")
+    private func setIssue(_ name: String, _ problem: CredentialProblem?, fingerprint: String?) {
+        if credentialIssues[name] != problem {
+            store.log(problem.map { "snapshot \(name): \($0.text)" } ?? "snapshot \(name): usable again")
         }
-        drift = info
+        credentialIssues[name] = problem
+        issueFingerprint[name] = problem == nil ? nil : fingerprint
+    }
+
+    /// A saved snapshot that answers with another account's identity was overwritten by a bad re-snapshot; it
+    /// must never be put live. Asked once per snapshot version.
+    private func verifySnapshot(_ p: AccountProfile, _ blob: OAuthBlob) async {
+        let owner = await switcher.tokenOwner(blob)
+        if case .unknown = owner { return }
+        verifiedFingerprint[p.name] = blob.fingerprint
+        if let bad = Switcher.targetProblem(owner: owner, expectedUuid: p.uuid, profiles: profiles) {
+            setIssue(p.name, bad, fingerprint: blob.fingerprint)
+        }
+    }
+
+    /// Keeps the live account's snapshot as fresh as the live item and reports drift. Runs when the live blob
+    /// changed (a session refreshed its token, a switch, a /login) and at least every 10 minutes.
+    private func syncLive(_ blob: OAuthBlob, now: Date) async {
+        guard blob.fingerprint != lastSyncedFingerprint || now.timeIntervalSince(lastLiveSync) > 600 else { return }
+        lastLiveSync = now
+        let result: Switcher.LiveSync
+        do { result = try await switcher.syncLiveSnapshot() } catch {
+            store.log("live snapshot sync failed: \(error.localizedDescription)")
+            return
+        }
+        lastSyncedFingerprint = blob.fingerprint
+        if result.wrote, case .save(let name) = result.decision {
+            store.log("snapshot '\(name)' refreshed from the live login")
+            setIssue(name, nil, fingerprint: nil)
+            hopFailedAt.removeValue(forKey: name)
+        }
+        switch result.owner {
+        case .confirmed(let uuid, let email):
+            guard let cfg = result.configUuid, uuid != cfg else { drift = nil; return }
+            let owner = profiles.first { $0.uuid == uuid }
+            let info = DriftInfo(tokenEmail: email, tokenUuid: uuid, tokenAccountName: owner?.name, configName: liveName)
+            if info != drift {
+                store.log("DRIFT: live token belongs to \(owner?.name ?? email ?? uuid), config says \(liveName ?? "?")")
+                Notifier.post("Keychain lệch với ~/.claude.json", "Token live thuộc \(owner?.name ?? email ?? "?") nhưng config nói \(liveName ?? "?"). Mở Claude Switcher → Sửa lệch.")
+            }
+            drift = info
+        case .rejected(let code):
+            drift = nil
+            if let live = liveName { setIssue(live, .rejected(code), fingerprint: blob.fingerprint) }
+        case .unknown:
+            break
+        }
     }
 
     // MARK: policy
 
     func states(now: Date = Date()) -> [AccountState] {
-        profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: records[$0.name], forcedExhaustedUntil: forcedExhausted[$0.name]) }
+        profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: records[$0.name],
+                                    forcedExhaustedUntil: forcedExhausted[$0.name], blocked: blockReason($0.name, now: now)) }
+    }
+
+    /// Why a hop must not go to this account now. A failed switch keeps it out for the cooldown, so a target
+    /// the app cannot switch to is not retried every tick.
+    func blockReason(_ name: String, now: Date = Date()) -> String? {
+        if let issue = credentialIssues[name] { return issue.text }
+        if let at = hopFailedAt[name], now.timeIntervalSince(at) < max(AppSettings.cooldown, 300) { return "vừa chuyển sang thất bại" }
+        return nil
     }
 
     func effective(_ name: String, now: Date = Date()) -> Effective? {
@@ -447,7 +545,7 @@ final class AppModel: ObservableObject {
         let now = Date()
         let d = HopPolicy.decide(live: liveName, states: states(now: now), t: AppSettings.thresholds, now: now,
                                  maxAge: TimeInterval(pollInterval * 3), lastHopAt: lastHopAt, cooldown: AppSettings.cooldown,
-                                 lastSwitchAt: lastSwitchAt, settle: 30)
+                                 lastSwitchAt: lastSwitchAt, settle: 30, lastManualSwitchAt: lastManualSwitchAt)
         decision = d
         switch d {
         case .hop(let to, let reason):
@@ -535,10 +633,17 @@ final class AppModel: ObservableObject {
             store.appendSwitch(SwitchEvent(at: now, from: from, to: name, by: auto ? "auto" : "app"))
             store.log("switch \(from ?? "?") -> \(name) by \(auto ? "auto" : "user")\(reason.map { " (\($0))" } ?? ""): \(out.split(separator: "\n").first ?? "")")
             lastSwitchAt = now
-            if auto { lastHopAt = now }
+            if auto { lastHopAt = now } else { lastManualSwitchAt = now }
+            settledLive = name
             lastError = nil
+            hopFailedAt.removeValue(forKey: name)
             reloadProfiles()
             lastMarker = store.currentMarker()
+            // the old picture is void: re-verify the live token on the next poll, and move the pending plan
+            drift = nil
+            lastLiveSync = .distantPast
+            pendingExternalPlan = nil
+            retargetPlan()
             if AppSettings.restartSessions, let from {
                 let moving = sessions.filter { $0.account.name == from || $0.account == .unknown }
                 planRestarts(for: moving, to: name)
@@ -553,6 +658,7 @@ final class AppModel: ObservableObject {
             await pollUsage()
         } catch {
             lastError = error.localizedDescription
+            hopFailedAt[name] = Date()
             store.log("switch to \(name) failed: \(error.localizedDescription)")
             if auto { Notifier.post("Hop sang \(name) thất bại", error.localizedDescription) }
         }
@@ -560,6 +666,10 @@ final class AppModel: ObservableObject {
 
     func planRestarts(for moving: [Session], to name: String) {
         guard !moving.isEmpty else { return }
+        guard name == liveName else {
+            store.log("restart plan to \(name) refused: live account is \(liveName ?? "unsaved")")
+            return
+        }
         var p = store.readRestartPlan() ?? RestartPlan(to: name, created: Date(), pids: [:])
         p.to = name
         for s in moving { p.pids[String(s.pid)] = name }
@@ -602,24 +712,36 @@ final class AppModel: ObservableObject {
     func addAccount(name: String, email: String) async {
         guard Switcher.isValidName(name) else { lastError = "Tên không hợp lệ (chữ, số, . _ @ -)"; return }
         guard !profiles.contains(where: { $0.name == name }) else { lastError = "'\(name)' đã tồn tại"; return }
+        await startLogin(name: name, email: email.isEmpty ? nil : email, relogin: false)
+    }
+
+    /// Signs in again as a saved account whose snapshot died; the browser must come back as that same account.
+    func relogin(_ name: String) async {
+        guard let p = profiles.first(where: { $0.name == name }) else { return }
+        await startLogin(name: name, email: p.oauthAccount.emailAddress, relogin: true)
+    }
+
+    private func startLogin(name: String, email: String?, relogin: Bool) async {
         guard Environment.which("claude") != nil else { lastError = "Không thấy `claude` trên PATH — thêm đường dẫn trong Cài đặt › Shell › PATH thêm"; return }
         if AppSettings.loginViaTerminal {
             do {
-                try await LoginLauncher.open(cli: cliPath, name: name, email: email.isEmpty ? nil : email, terminalApp: AppSettings.terminalApp)
+                try await LoginLauncher.open(cli: cliPath, name: name, email: email, relogin: relogin, terminalApp: AppSettings.terminalApp)
                 lastError = nil
-                store.log("login window opened for \(name)")
+                store.log("login window opened for \(name)\(relogin ? " (relogin)" : "")")
             } catch { lastError = error.localizedDescription }
             return
         }
         if let f = loginFlow, !f.state.phase.isTerminal { lastError = "Đang có một đăng nhập chạy ('\(f.name)') — huỷ nó trước"; return }
         do {
-            loginFlow = try await LoginFlow(name: name, email: email.isEmpty ? nil : email, switcher: switcher,
+            loginFlow = try await LoginFlow(name: name, email: email, relogin: relogin, switcher: switcher,
                                             privateWindow: AppSettings.loginPrivateWindow) { [weak self] st in
                 guard let self else { return }
                 self.login = st
                 if case .done(let msg) = st.phase {
                     self.store.log("login \(st.name): \(msg.split(separator: "\n").first ?? "")")
-                    Notifier.post("Đã thêm account '\(st.name)'", msg.split(separator: "\n").first.map(String.init) ?? "")
+                    Notifier.post(st.relogin ? "Đã đăng nhập lại '\(st.name)'" : "Đã thêm account '\(st.name)'", msg.split(separator: "\n").first.map(String.init) ?? "")
+                    self.setIssue(st.name, nil, fingerprint: nil)
+                    self.hopFailedAt.removeValue(forKey: st.name)
                     self.reloadProfiles()
                     Task { await self.pollUsage() }
                 } else if case .failed(let why) = st.phase {
@@ -628,7 +750,7 @@ final class AppModel: ObservableObject {
             }
             login = loginFlow?.state
             lastError = nil
-            store.log("in-app login started for \(name)")
+            store.log("in-app login started for \(name)\(relogin ? " (relogin)" : "")")
         } catch { lastError = error.localizedDescription }
     }
 
@@ -680,27 +802,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Drift repair: the live token really belongs to X, config says Y. Save the live blob back into X's
-    /// snapshot (its freshest tokens), then put Y's snapshot into the live item so both agree again.
+    /// Drift repair, decided by `Switcher.realign` on the state at the moment of the click.
     func realign() async {
-        guard let d = drift, let configName = d.configName else { return }
         busyText = "Đang sửa lệch…"
         defer { busyText = nil }
         do {
-            try await switcher.withLock {
-                guard let liveBlob = await Keychain.readLive() else { throw SwitcherError("không đọc được live Keychain") }
-                if let owner = d.tokenAccountName {
-                    try await Keychain.write(service: Keychain.savedService(owner), raw: liveBlob.raw)
-                }
-                guard let target = await Keychain.readSaved(configName) else { throw SwitcherError("snapshot của \(configName) trống") }
-                try await Keychain.write(service: Keychain.liveService, raw: target.raw)
-            }
-            store.log("realigned: live token (\(d.tokenAccountName ?? d.tokenEmail ?? "?")) saved back, \(configName) restored to live")
+            let msg = try await switcher.realign()
+            store.log(msg)
             drift = nil
-            lastDriftCheck = .distantPast
+            lastLiveSync = .distantPast
             lastError = nil
             await pollUsage()
-        } catch { lastError = error.localizedDescription }
+        } catch {
+            lastError = error.localizedDescription
+            store.log("realign failed: \(error.localizedDescription)")
+        }
     }
 
     func uninstall() async {

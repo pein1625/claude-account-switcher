@@ -26,9 +26,12 @@ enum HookRunner {
 
         guard let target = store.readRestartPlan()?.pids[String(pid)], !target.isEmpty else { return 0 }
         guard env["CLAUDE_AS_LOOP"] == "1" else { return 0 }
+        // A plan only moves sessions onto the live account. One naming another account is stale (the live login
+        // changed since): restarting on it would switch the live login away again. The app retargets it.
+        guard target == store.liveName(profiles: store.loadProfiles(), live: store.liveOAuthAccount()) else { return 0 }
 
         if let id = env["CLAUDE_AS_ID"], !id.isEmpty {
-            store.writeHopMarker(id: id, target)
+            store.writeHopMarker(id: id, target, sessionID: json["session_id"] as? String)
         } else {
             store.writeHop(target)
         }

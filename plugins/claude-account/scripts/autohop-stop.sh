@@ -11,6 +11,12 @@ dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}"
 
 input=$(cat 2>/dev/null || true)
 if printf '%s' "$input" | jq -e '.agent_id // empty' >/dev/null 2>&1; then exit 0; fi
+# Claude Switcher.app running (heartbeat < 120 s): its own Stop hook decides which session restarts where
+alive="$dir/.switcher/alive"
+if [ -f "$alive" ]; then
+  m=$(stat -f %m "$alive" 2>/dev/null || stat -c %Y "$alive" 2>/dev/null || echo 0)
+  [ $(( $(date +%s) - m )) -lt 120 ] && exit 0
+fi
 event=$(printf '%s' "$input" | jq -r '.hook_event_name // "Stop"' 2>/dev/null || echo Stop)
 
 if [ "$event" = StopFailure ]; then

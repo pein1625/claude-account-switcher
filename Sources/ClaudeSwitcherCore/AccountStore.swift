@@ -142,11 +142,21 @@ public final class AccountStore {
     public func removeHop() { try? FileManager.default.removeItem(at: Paths.hopFile) }
 
     /// Per-loop relaunch target for this app's `claude-as` (`.switcher/hop-<CLAUDE_AS_ID>`).
-    public func writeHopMarker(id: String, _ name: String) { Paths.ensureSwitcherDir(); writePrivate(Paths.hopMarker(id), name + "\n") }
+    public func writeHopMarker(id: String, _ name: String, sessionID: String? = nil) {
+        Paths.ensureSwitcherDir()
+        if let sessionID, !sessionID.isEmpty { writePrivate(Paths.hopSessionMarker(id), sessionID + "\n") }
+        writePrivate(Paths.hopMarker(id), name + "\n")
+    }
 
-    public func hopMarkers() -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(at: Paths.switcherDir, includingPropertiesForKeys: nil))?
-            .filter { $0.lastPathComponent.hasPrefix("hop-") } ?? []
+    /// An old loop consumes the marker but not the session file next to it.
+    public func pruneSessionMarkers(now: Date = Date(), maxAge: TimeInterval = 300) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: Paths.switcherDir, includingPropertiesForKeys: nil) else { return }
+        for f in files where f.lastPathComponent.hasPrefix("hop-") && f.pathExtension == "session" {
+            let marker = f.deletingPathExtension()
+            guard !fm.fileExists(atPath: marker.path), let m = mtime(f), now.timeIntervalSince(m) > maxAge else { continue }
+            try? fm.removeItem(at: f)
+        }
     }
 
     /// The hook and the CLI check this before waiting on the app.

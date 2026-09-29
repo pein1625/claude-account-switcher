@@ -131,7 +131,7 @@ struct MenuBarView: View {
     private var policyRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle(isOn: $model.autoSwitch) {
-                Text("Tự hop khi 5h ≥ \(Int(AppSettings.hopAt))%").font(.callout)
+                Text("Tự hop khi 5h ≥ \(Int(AppSettings.hopAt))%" + (AppSettings.prefer7d ? " · chia đều quota tuần" : "")).font(.callout)
             }.toggleStyle(.switch).controlSize(.small)
             Text(decisionText).font(.caption).foregroundStyle(.secondary)
         }
@@ -280,6 +280,7 @@ struct AccountRow: View {
     var body: some View {
         let eff = model.effective(profile.name)
         let u = model.usage[profile.name]
+        let issue = model.credentialIssues[profile.name]
         let sessions = model.sessions.filter { $0.account.name == profile.name }.count
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -288,11 +289,15 @@ struct AccountRow: View {
                 if isLive { Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(.green) }
                 Text("\(profile.email) · \(profile.plan) · \(profile.org)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                if !isLive {
+                if issue != nil {
+                    Button("Đăng nhập lại") { Task { await model.relogin(profile.name) } }
+                        .controlSize(.small).disabled(model.busy || model.login?.phase.isTerminal == false)
+                } else if !isLive {
                     Button("Chuyển") { Task { await model.performSwitch(to: profile.name, auto: false) } }
                         .controlSize(.small).disabled(model.busy)
                 }
                 Menu {
+                    Button("Đăng nhập lại…") { Task { await model.relogin(profile.name) } }
                     Button("Đổi tên…") { newName = profile.name; renaming = true; confirmingRemove = false; nameFocused = true }
                     Button("Xoá snapshot…", role: .destructive) { confirmingRemove = true; renaming = false }
                 } label: { Image(systemName: "ellipsis.circle") }
@@ -325,10 +330,20 @@ struct AccountRow: View {
                 Text("Đổi tên snapshot (Keychain item, profile, lịch sử). Login live không đổi; tên dùng trong `claude-as <tên>`.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
+            if let issue {
+                Text(isLive
+                     ? "Login live: \(issue.text). Bấm Đăng nhập lại (hoặc /login trong một session)."
+                     : "Không chuyển sang được: \(issue.text). Hop tự động bỏ qua account này tới khi Đăng nhập lại.")
+                    .font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
             bar("5h", Reading.fiveHour(eff: eff, usage: u), threshold: AppSettings.hopAt)
             bar("7d", Reading.sevenDay(eff: eff, usage: u), threshold: AppSettings.sevenDayAt)
             HStack(spacing: 8) {
                 Text(sourceText(eff, u)).font(.caption2).foregroundStyle(.secondary)
+                if let pace = paceText(eff) {
+                    Text(pace.text).font(.caption2).foregroundStyle(pace.color)
+                        .help("7d đã dùng so với phần tuần đã trôi qua tới lúc reset. Chậm = quota sẽ mất khi reset → nên dùng trước; nhanh = sẽ cạn trước reset → để dành.")
+                }
                 if sessions > 0 { Text("\(sessions) session").font(.caption2).foregroundStyle(.secondary) }
                 if let extras = u?.extras, !extras.isEmpty {
                     Text(extras.sorted { $0.key < $1.key }.map { "\($0.key.replacingOccurrences(of: "seven_day_", with: "7d ")) \(Format.pct($0.value.pct))" }.joined(separator: " · "))
@@ -381,6 +396,17 @@ struct AccountRow: View {
         }
     }
 
+    private func paceText(_ eff: Effective?) -> (text: String, color: Color)? {
+        guard let eff else { return nil }
+        if let x = HopPolicy.expiring(eff, AppSettings.thresholds, now: Date()) {
+            return ("tuần: còn \(Int(x.left.rounded()))%, reset sau \(Int(x.hours.rounded()))h → dùng trước", .green)
+        }
+        guard let slack = HopPolicy.weekSlack(eff, now: Date()) else { return nil }
+        let n = Int(slack.rounded())
+        if abs(n) < 3 { return ("tuần: đúng tiến độ", .secondary) }
+        return n < 0 ? ("tuần: chậm \(-n) điểm", .green) : ("tuần: nhanh \(n) điểm", .orange)
+    }
+
     private func sourceText(_ eff: Effective?, _ u: AccountUsage?) -> String {
         guard let eff else { return "chưa đo" }
         switch eff.source {
@@ -404,6 +430,9 @@ struct SettingsView: View {
     @AppStorage(AppSettings.Key.autoSaveLogin.rawValue) private var autoSaveLogin = true
     @AppStorage(AppSettings.Key.loginPrivateWindow.rawValue) private var loginPrivateWindow = true
     @AppStorage(AppSettings.Key.loginViaTerminal.rawValue) private var loginViaTerminal = false
+    @AppStorage(AppSettings.Key.prefer7d.rawValue) private var prefer7d = true
+    @AppStorage(AppSettings.Key.sevenDayMargin.rawValue) private var sevenDayMargin = 10
+    @AppStorage(AppSettings.Key.nearResetHours.rawValue) private var nearResetHours = 24
     @State private var extraPath = AppSettings.defaults.string(forKey: AppSettings.Key.extraPath.rawValue) ?? ""
     @State private var confirmUninstall = false
 
@@ -423,6 +452,19 @@ struct SettingsView: View {
             Toggle("Tự hop account khi hết quota", isOn: $model.autoSwitch)
             percentRow("Hop khi 5h ≥", value: $hopAt, hint: "100 = chỉ hop khi cạn hẳn (hoặc session báo rate limit)")
             percentRow("Coi là hết khi 7d ≥", value: $sevenDayAt, hint: "account có 7d ≥ ngưỡng không được chọn làm đích")
+            Toggle("Chia đều quota tuần theo giờ reset của từng account", isOn: $prefer7d)
+                .onChange(of: prefer7d) { _, _ in model.evaluate() }
+            if prefer7d {
+                percentRow("Chuyển sớm khi lệch tiến độ ≥", value: $sevenDayMargin,
+                           hint: "tiến độ = 7d đã dùng − % tuần đã trôi qua tới lúc reset. Đích = account chậm tiến độ nhất (quota sẽ mất khi reset); account live nhanh hơn đích từ ngần này điểm → chuyển luôn, không đợi hết 5h (đích phải còn 5h dưới ngưỡng hop trừ khoảng này). Mỗi lần chuyển restart các session; account chọn tay được giữ 1 giờ")
+                VStack(alignment: .leading, spacing: 2) {
+                    Stepper(nearResetHours == 0 ? "Dùng nốt quota sắp reset: tắt" : "Dùng nốt quota sắp reset: \(nearResetHours) giờ cuối tuần",
+                            value: $nearResetHours, in: 0...72, step: 6)
+                        .onChange(of: nearResetHours) { _, _ in model.evaluate() }
+                    Text("account có tuần reset trong khoảng này mà còn quota → dùng trước, reset sớm hơn thì trước (phần còn lại mất khi reset, account khác thì không). Chuyển sang đó khi còn ≥ khoảng chênh; ít hơn thì chỉ dùng lúc hop")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Picker("Đo quota mỗi", selection: $pollSeconds) {
                 Text("1 phút").tag(60); Text("2 phút").tag(120); Text("5 phút").tag(300); Text("10 phút").tag(600)
             }
@@ -514,7 +556,7 @@ struct SettingsView: View {
                 Text("Đăng nhập account mới chạy `claude auth login`; app tự thêm ~/.local/bin, Homebrew và nvm mới nhất vào PATH.").font(.caption).foregroundStyle(.secondary)
             }
             Section("CLI") {
-                Text("`claude-switcher list | current | save | use | login | remove | rename | next | status | doctor | install | uninstall` — cùng thao tác như menu, dùng được trong script.")
+                Text("`claude-switcher list | current | save | use | login | relogin | realign | remove | rename | next | status | doctor | install | uninstall` — cùng thao tác như menu, dùng được trong script. Có app thì `claude-account` (plugin) cũng chuyển các lệnh ghi sang đây.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -578,7 +620,7 @@ struct LoginPanel: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: icon).foregroundStyle(color)
-                Text("Đăng nhập '\(state.name)'\(state.email.map { " · \($0)" } ?? "")").font(.callout.weight(.semibold))
+                Text("\(state.relogin ? "Đăng nhập lại" : "Đăng nhập") '\(state.name)'\(state.email.map { " · \($0)" } ?? "")").font(.callout.weight(.semibold))
                 Spacer()
                 if state.phase.isTerminal {
                     Button("Đóng") { model.loginDismiss() }.controlSize(.small)
@@ -601,10 +643,13 @@ struct LoginPanel: View {
                         .onSubmit { model.loginSubmitCode(code); code = "" }
                     Button("Gửi") { model.loginSubmitCode(code); code = "" }.disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
                 }.controlSize(.small)
-            case .failed(let why) where why.contains("already saved"):
+            case .failed(let why) where why.contains("already saved") || why.contains("not as '"):
                 Button("Thử lại trong cửa sổ riêng tư") {
                     model.loginDismiss()
-                    Task { await model.addAccount(name: state.name, email: state.email ?? "") }
+                    Task {
+                        if state.relogin { await model.relogin(state.name) }
+                        else { await model.addAccount(name: state.name, email: state.email ?? "") }
+                    }
                 }.controlSize(.small)
             default: EmptyView()
             }
@@ -633,7 +678,8 @@ struct LoginPanel: View {
         switch state.phase {
         case .starting: return "Đang khởi động claude auth login…"
         case .waitingBrowser:
-            return "Trang đăng nhập Claude đã mở trong \(state.openedIn ?? "trình duyệt"). Đăng nhập bằng account MỚI rồi bấm Authorize; app tự nhận kết quả. Trình duyệt đang giữ phiên claude.ai của account khác → đăng xuất hoặc dùng cửa sổ riêng tư."
+            let who = state.relogin ? "account '\(state.name)'\(state.email.map { " (\($0))" } ?? "")" : "account MỚI"
+            return "Trang đăng nhập Claude đã mở trong \(state.openedIn ?? "trình duyệt"). Đăng nhập bằng \(who) rồi bấm Authorize; app tự nhận kết quả. Trình duyệt đang giữ phiên claude.ai của account khác → đăng xuất hoặc dùng cửa sổ riêng tư."
         case .needCode: return "Trang đăng nhập đã mở trong \(state.openedIn ?? "trình duyệt"). Sau khi Authorize, trang sẽ hiện một đoạn code — dán vào ô dưới."
         case .finishing: return "Đã nhận đăng nhập, đang snapshot…"
         case .done(let msg): return msg

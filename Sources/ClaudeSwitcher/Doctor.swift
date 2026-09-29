@@ -52,6 +52,10 @@ enum Doctor {
         let liveBlob = await Keychain.readLive()
         add(liveBlob?.hasRefreshToken == true ? .ok : .fail, liveBlob?.hasRefreshToken == true ? "Keychain live item có OAuth token" : "Keychain '\(Keychain.liveService)' không có OAuth token (login API key?)")
         add(.ok, "\(profiles.count) account đã lưu trong \(Paths.accountsDir.path)")
+        for p in profiles where p.name != liveName {
+            let problem = await Keychain.inspect(service: Keychain.savedService(p.name)).problem
+            add(problem == nil ? .ok : .fail, problem.map { "\(p.name): snapshot \($0.text) → claude-switcher relogin \(p.name)" } ?? "\(p.name): snapshot Keychain dùng được")
+        }
         for p in profiles {
             let u = usage[p.name]
             if let u, u.isFreshAPI { add(.ok, "\(p.name): usage API OK (5h \(Int(u.fiveHour?.pct ?? 0))%, 7d \(Int(u.sevenDay?.pct ?? 0))%)") }

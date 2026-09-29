@@ -6,10 +6,11 @@ public enum LoginLauncher {
     /// bash runs `claude auth login` itself (same shape as the proven claude-account script); the binary only
     /// prepares the scratch dir and snapshots the result.
     /// `scratch` given: the caller already ran login-prepare (the `claude-switcher login` command execs this).
-    public static func loginScript(cli: String, name: String, email: String?, scratch: String? = nil) -> String {
+    public static func loginScript(cli: String, name: String, email: String?, scratch: String? = nil, relogin: Bool = false) -> String {
         let q = ShellInstaller.shellQuote
         let emailArg = (email?.isEmpty == false) ? " --email \(q(email!))" : ""
-        let prepare = scratch.map { "scratch=\(q($0))" } ?? #"scratch=$("$cs" login-prepare "$name") || exit 1"#
+        let prepare = scratch.map { "scratch=\(q($0))" }
+            ?? (relogin ? #"scratch=$("$cs" login-prepare --relogin "$name") || exit 1"# : #"scratch=$("$cs" login-prepare "$name") || exit 1"#)
         return """
         #!/bin/bash
         export PATH=\(q(Environment.path))
@@ -40,10 +41,10 @@ public enum LoginLauncher {
         """
     }
 
-    public static func open(cli: String, name: String, email: String?, terminalApp: String) async throws {
+    public static func open(cli: String, name: String, email: String?, relogin: Bool = false, terminalApp: String) async throws {
         Paths.ensureSwitcherDir()
         let file = Paths.switcherDir.appendingPathComponent("login-\(name).command")
-        try loginScript(cli: cli, name: name, email: email).write(to: file, atomically: true, encoding: .utf8)
+        try loginScript(cli: cli, name: name, email: email, relogin: relogin).write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
         let r = try await Shell.run("/usr/bin/open", ["-a", terminalApp, file.path], timeout: 20)
         guard r.ok else { throw ShellError("open -a \(terminalApp) failed: \(r.trimmedErr)") }

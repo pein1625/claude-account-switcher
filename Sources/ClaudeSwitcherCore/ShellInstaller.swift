@@ -62,9 +62,9 @@ public enum ShellInstaller {
         # claude-as [account] [claude args...]   (written by Claude Switcher.app; `claude` is aliased to it)
         #   Starts claude, optionally after switching to <account>. When Claude Switcher moves this session to
         #   another account, its Stop hook ends the process at the end of a turn; this loop then switches the
-        #   login and resumes the same conversation with `claude --continue`.
+        #   login and resumes the same conversation (`claude --resume <its id>`, else `--continue`).
         claude-as() {
-          local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" cs="$HOME/.local/bin/claude-switcher" sw id next rc
+          local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" cs="$HOME/.local/bin/claude-switcher" sw id next sid rc
           sw="$dir/.switcher"
           if [ -n "${1:-}" ] && [ -f "$dir/$1.json" ]; then
             "$cs" use "$1" || return $?
@@ -77,21 +77,36 @@ public enum ShellInstaller {
             id="$$-$RANDOM$RANDOM"
             CLAUDE_AS_LOOP=1 CLAUDE_AS_ID="$id" command claude "$@"
             rc=$?
+            sid=""
             if [ -s "$sw/hop-$id" ]; then
               next=$(cat "$sw/hop-$id"); rm -f "$sw/hop-$id"
+              [ -s "$sw/hop-$id.session" ] && sid=$(cat "$sw/hop-$id.session")
+              rm -f "$sw/hop-$id.session"
             elif [ -s "$dir/.hop" ]; then
               next=$(cat "$dir/.hop"); rm -f "$dir/.hop"
             else
               return $rc
             fi
-            "$cs" use "$next" || return $?
-            printf 'claude-as: resuming as %s\n' "$next"
-            set -- --continue
+            # a failed switch must not end the session: resume on whatever login is live
+            if "$cs" use "$next"; then
+              printf 'claude-as: resuming as %s\n' "$next"
+            else
+              printf 'claude-as: switch to %s failed - resuming on the current login\n' "$next" >&2
+            fi
+            # --continue would pick the newest conversation in this directory - another session's, when
+            # several run here; the hook hands over this one's id
+            if [ -n "$sid" ]; then set -- --resume "$sid"; else set -- --continue; fi
           done
         }
         alias claude='claude-as'
         # <<< claude-account <<<
         """#
+    }
+
+    /// Our block exists and is exactly what this version writes.
+    public static func rcIsCurrent(rc: URL) -> Bool {
+        guard let s = try? String(contentsOf: rc, encoding: .utf8) else { return false }
+        return existingBlock(in: s) == rcBlock()
     }
 
     public static func rcStatus(rc: URL) -> RCStatus {

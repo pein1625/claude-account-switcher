@@ -131,6 +131,86 @@ do {
     equal(HopPolicy.ranked(three, excluding: "m04", t: t, now: now, maxAge: 300).map(\.name), ["m07", "m19"])
 }
 
+// MARK: 7d preference
+do {
+    let t7 = Thresholds(hopAt: 90, sevenDayAt: 100, prefer7d: true, sevenDayMargin: 10)
+    let three7 = [AccountState(name: "m04", usage: api(92, 50)), AccountState(name: "m19", usage: api(40, 20)), AccountState(name: "m07", usage: api(10, 70))]
+    equal(HopPolicy.decide(live: "m04", states: three7, t: t7, now: now), .hop(to: "m19", reason: "m04 5h 92% ≥ 90%"), "exhausted: lowest 7d wins over lowest 5h")
+    equal(HopPolicy.decide(live: "m04", states: three7, t: t, now: now), .hop(to: "m07", reason: "m04 5h 92% ≥ 90%"), "prefer7d off keeps lowest 5h")
+    let tight = [AccountState(name: "m04", usage: api(95, 50)), AccountState(name: "m19", usage: api(85, 10)), AccountState(name: "m07", usage: api(10, 60))]
+    equal(HopPolicy.ranked(tight, excluding: "m04", t: t7, now: now, maxAge: 300).map(\.name), ["m07", "m19"], "5h room beats a lower 7d with no 5h room")
+
+    // the screenshot's day: m04 live at 5h 24% / 7d 98%, m19 at 5h 3% / 7d 60%
+    let week = [AccountState(name: "m04", usage: api(24, 98)), AccountState(name: "m19", usage: api(3, 60))]
+    equal(HopPolicy.decide(live: "m04", states: week, t: t7, now: now), .hop(to: "m19", reason: "cân bằng tuần: m04 +12 so với tiến độ, m19 -26 (chênh ≥ 10)"),
+          "live not exhausted, pace gap ≥ margin -> move")
+    if case .stay = HopPolicy.decide(live: "m04", states: week, t: t, now: now) {} else { check(false, "no rebalance with prefer7d off") }
+    let close = [AccountState(name: "m04", usage: api(24, 65)), AccountState(name: "m19", usage: api(3, 60))]
+    if case .stay = HopPolicy.decide(live: "m04", states: close, t: t7, now: now) {} else { check(false, "gap under margin -> stay (no ping-pong)") }
+    let noRoom = [AccountState(name: "m04", usage: api(24, 98)), AccountState(name: "m19", usage: api(85, 10))]
+    if case .stay = HopPolicy.decide(live: "m04", states: noRoom, t: t7, now: now) {} else { check(false, "candidate without 5h room -> stay") }
+    if case .hold = HopPolicy.decide(live: "m04", states: week, t: t7, now: now, lastManualSwitchAt: now.addingTimeInterval(-600)) {} else { check(false, "manual choice held for an hour") }
+    if case .hop = HopPolicy.decide(live: "m04", states: week, t: t7, now: now, lastManualSwitchAt: now.addingTimeInterval(-3601)) {} else { check(false, "hold over") }
+    if case .hold = HopPolicy.decide(live: "m04", states: week, t: t7, now: now, lastHopAt: now.addingTimeInterval(-60)) {} else { check(false, "rebalance respects cooldown") }
+    let manualButOut = [AccountState(name: "m04", usage: api(95, 98)), AccountState(name: "m19", usage: api(3, 60))]
+    if case .hop = HopPolicy.decide(live: "m04", states: manualButOut, t: t7, now: now, lastManualSwitchAt: now) {} else { check(false, "manual hold never blocks an exhaustion hop") }
+    let deadLow = [AccountState(name: "m04", usage: api(24, 98)), AccountState(name: "m19", usage: api(3, 5), blocked: "token bị từ chối")]
+    if case .stay = HopPolicy.decide(live: "m04", states: deadLow, t: t7, now: now) {} else { check(false, "blocked account never a rebalance target") }
+
+    // weekly pace: used 7d minus the elapsed share of each account's own week
+    func paced(_ five: Double, _ seven: Double, resetIn hours: Double) -> AccountUsage {
+        AccountUsage(fiveHour: WindowUsage(pct: five, resetsAt: now.addingTimeInterval(3600)),
+                     sevenDay: WindowUsage(pct: seven, resetsAt: now.addingTimeInterval(hours * 3600)), fetchedAt: now, source: .api)
+    }
+    func slack(_ u: AccountUsage) -> Double? { HopPolicy.weekSlack(HopPolicy.effective(AccountState(name: "x", usage: u), now: now, maxAge: 300), now: now) }
+    equal(slack(paced(0, 50, resetIn: 84)).map { $0.rounded() }, 0, "half the week gone, half used -> on pace")
+    equal(slack(paced(0, 99, resetIn: 50.2)).map { $0.rounded() }, 29, "m04 today: 99% with 50h left is 29 points ahead")
+    equal(slack(paced(0, 63, resetIn: 39.2)).map { $0.rounded() }, -14, "m19 today: 63% with 39h left is 14 points behind")
+    var rolled = paced(0, 80, resetIn: -24); rolled.sevenDay?.resetsAt = now.addingTimeInterval(-24 * 3600)
+    equal(slack(rolled).map { $0.rounded() }, -14, "reset passed: 0% used, next week 1 day in (-100/7)")
+    check(slack(AccountUsage(fiveHour: WindowUsage(pct: 1, resetsAt: nil), fetchedAt: now, source: .api)) == nil, "no 7d reading -> no pace")
+
+    // resets far apart: a lower 7d % is not the account to use when the other resets within hours
+    let lopsided = [AccountState(name: "m04", usage: paced(20, 40, resetIn: 144)), AccountState(name: "m19", usage: paced(10, 70, resetIn: 5))]
+    equal(HopPolicy.decide(live: "m04", states: lopsided, t: t7, now: now), .hop(to: "m19", reason: "dùng nốt m19 trước khi reset (còn 30%, 5h nữa)"),
+          "m19's 30% left would be lost in 5h; m04 has 6 days")
+    var noExpiry = t7; noExpiry.nearResetHours = 0
+    equal(HopPolicy.decide(live: "m04", states: lopsided, t: noExpiry, now: now), .hop(to: "m19", reason: "cân bằng tuần: m04 +26 so với tiến độ, m19 -27 (chênh ≥ 10)"),
+          "expiry tier off: the weekly pace alone gets there too")
+
+    // the user's case: one account just reset, the other resets at the end of the day
+    let justReset = AccountState(name: "m04", usage: paced(10, 2, resetIn: 166))
+    let endOfDay = { (used: Double) in AccountState(name: "m19", usage: paced(5, used, resetIn: 10)) }
+    equal(HopPolicy.decide(live: "m04", states: [justReset, endOfDay(60)], t: t7, now: now), .hop(to: "m19", reason: "dùng nốt m19 trước khi reset (còn 40%, 10h nữa)"),
+          "move to the account whose week ends today")
+    equal(HopPolicy.decide(live: "m04", states: [justReset, endOfDay(88)], t: t7, now: now), .hop(to: "m19", reason: "dùng nốt m19 trước khi reset (còn 12%, 10h nữa)"),
+          "even near pace: the pace rule alone (gap 7 < 10) would stay on m04 and lose the 12%")
+    if case .stay = HopPolicy.decide(live: "m04", states: [justReset, endOfDay(97)], t: t7, now: now) {} else { check(false, "3% left < margin: not worth restarting every session for") }
+    equal(HopPolicy.ranked([justReset, endOfDay(97)], excluding: "m07", t: t7, now: now, maxAge: 300).first?.name, "m19",
+          "but it is the first target once a hop happens anyway")
+    equal(HopPolicy.decide(live: "m19", states: [justReset, endOfDay(88)], t: t7, now: now), .stay("dùng nốt m19 trước khi reset (còn 12%, 10h nữa)"),
+          "live on the expiring account: stay, the pace rule would have moved away")
+    let sooner = AccountState(name: "m07", usage: paced(5, 70, resetIn: 3))
+    equal(HopPolicy.decide(live: "m19", states: [justReset, endOfDay(60), sooner], t: t7, now: now), .hop(to: "m07", reason: "dùng nốt m07 trước khi reset (còn 30%, 3h nữa)"),
+          "two expiring: the earlier reset first")
+    let soonerTiny = AccountState(name: "m07", usage: paced(5, 95, resetIn: 3))
+    if case .stay = HopPolicy.decide(live: "m19", states: [justReset, endOfDay(60), soonerTiny], t: t7, now: now) {} else { check(false, "an earlier but tiny leftover does not pull the live expiring account away") }
+    equal(HopPolicy.decide(live: "m19", states: [AccountState(name: "m19", usage: paced(95, 60, resetIn: 10)), justReset], t: t7, now: now),
+          .hop(to: "m04", reason: "m19 5h 95% ≥ 90%"), "5h out on the expiring account: hop anyway")
+    let today = [AccountState(name: "m04", usage: paced(100, 99, resetIn: 50.2)), AccountState(name: "m19", usage: paced(22, 63, resetIn: 39.2))]
+    if case .stay = HopPolicy.decide(live: "m19", states: today, t: t7, now: now) {} else { check(false, "today: stay on m19 (behind pace, m04 out)") }
+    let todayFresh = [AccountState(name: "m04", usage: paced(10, 99, resetIn: 50.2)), AccountState(name: "m19", usage: paced(22, 63, resetIn: 39.2))]
+    equal(HopPolicy.decide(live: "m04", states: todayFresh, t: t7, now: now), .hop(to: "m19", reason: "cân bằng tuần: m04 +29 so với tiến độ, m19 -14 (chênh ≥ 10)"),
+          "today from m04 with 5h left: still move to m19")
+
+    let staleWeek = AccountUsage(fiveHour: WindowUsage(pct: 50, resetsAt: now.addingTimeInterval(-100)), sevenDay: WindowUsage(pct: 60, resetsAt: now.addingTimeInterval(86400)),
+                                 fetchedAt: now.addingTimeInterval(-7200), source: .api)
+    let staleEff = HopPolicy.effective(AccountState(name: "m19", usage: staleWeek, record: oldRecForBlock()), now: now, maxAge: 300)
+    equal(staleEff.source, .recorded); equal(staleEff.sevenDay, 60, "stale 7d kept: a lower bound until its reset")
+    var resetWeek = staleWeek; resetWeek.sevenDay = WindowUsage(pct: 60, resetsAt: now.addingTimeInterval(-1))
+    equal(HopPolicy.effective(AccountState(name: "m19", usage: resetWeek), now: now, maxAge: 300).sevenDay, 0, "7d window already reset -> 0")
+}
+
 // MARK: shell installer, launcher, plan, hooks
 do {
     let block = ShellInstaller.rcBlock()
@@ -201,6 +281,64 @@ do {
     equal(Switcher.suggestName(email: nil, taken: []), "account")
     equal(Switcher.suggestName(email: "@x.io", taken: []), "account")
 }
+
+// MARK: credentials, snapshot ownership
+do {
+    let full = OAuthBlob(raw: #"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1800000000000}}"#)
+    check(full?.isComplete == true, "both tokens -> complete")
+    check(OAuthBlob(raw: #"{"claudeAiOauth":{"accessToken":"","refreshToken":"r"}}"#)?.isComplete == false, "empty access token parses but is incomplete (the CLI used to accept it)")
+    check(OAuthBlob(raw: #"{"claudeAiOauth":{"accessToken":"a"}}"#)?.isComplete == false, "no refresh token -> incomplete")
+    check(OAuthBlob(raw: #"{"mcpOAuth":{}}"#) == nil && OAuthBlob(raw: "6a736f6e") == nil, "not an OAuth blob -> nil")
+    check(full?.isExpired(at: Date(timeIntervalSince1970: 1_800_000_001)) == true, "expiry in ms")
+
+    func prof(_ n: String, _ uuid: String) -> AccountProfile { AccountProfile(name: n, oauthAccount: OAuthAccount(accountUuid: uuid, emailAddress: "\(n)@x.io")) }
+    let ps = [prof("m04", "u4"), prof("m19", "u19")]
+    equal(Switcher.snapshotDecision(configName: "m19", owner: .confirmed(uuid: "u19", email: nil), profiles: ps, trustConfig: false), .save("m19"))
+    equal(Switcher.snapshotDecision(configName: "m19", owner: .confirmed(uuid: "u4", email: nil), profiles: ps, trustConfig: true), .save("m04"),
+          "drift: the live token goes to its real owner, never to the account the config names (the 2026-09-25 loss)")
+    if case .skip = Switcher.snapshotDecision(configName: "m19", owner: .confirmed(uuid: "u7", email: "m07@x.io"), profiles: ps, trustConfig: true) {} else { check(false, "unsaved owner -> skip") }
+    if case .skip = Switcher.snapshotDecision(configName: "m19", owner: .rejected(401), profiles: ps, trustConfig: true) {} else { check(false, "rejected token is never snapshotted") }
+    equal(Switcher.snapshotDecision(configName: "m19", owner: .unknown, profiles: ps, trustConfig: true), .save("m19"), "unverifiable + trust -> config name (pre-0.5 rule)")
+    if case .skip = Switcher.snapshotDecision(configName: "m19", owner: .unknown, profiles: ps, trustConfig: false) {} else { check(false, "periodic sync writes verified owners only") }
+    if case .skip = Switcher.snapshotDecision(configName: nil, owner: .unknown, profiles: ps, trustConfig: true) {} else { check(false, "unsaved login, unverified -> skip") }
+
+    equal(Switcher.targetProblem(owner: .confirmed(uuid: "u19", email: nil), expectedUuid: "u19", profiles: ps), nil)
+    equal(Switcher.targetProblem(owner: .confirmed(uuid: "u4", email: nil), expectedUuid: "u19", profiles: ps), .wrongOwner("'m04'"), "snapshot holding another account's token")
+    equal(Switcher.targetProblem(owner: .rejected(401), expectedUuid: "u19", profiles: ps), .rejected(401))
+    equal(Switcher.targetProblem(owner: .unknown, expectedUuid: "u19", profiles: ps), nil, "cannot tell -> allowed")
+
+    let dead = [AccountState(name: "m04", usage: api(96)), AccountState(name: "m19", record: oldRecForBlock(), blocked: "token bị từ chối"), AccountState(name: "m07", usage: api(50))]
+    equal(HopPolicy.decide(live: "m04", states: dead, t: t, now: now), .hop(to: "m07", reason: "m04 5h 96% ≥ 90%"),
+          "a blocked account is never a hop target, even at 0%")
+    equal(HopPolicy.decide(live: "m04", states: Array(dead.prefix(2)), t: t, now: now), .allExhausted(nextReset: nil), "only a blocked account left -> nothing to hop to")
+
+    let block = ShellInstaller.rcBlock()
+    check(block.contains(#"if "$cs" use "$next"; then"#) && block.contains("resuming on the current login") && !block.contains(#""$cs" use "$next" || return"#),
+          "claude-as resumes on the current login when the switch fails")
+    check(LoginLauncher.loginScript(cli: "/x/cs", name: "m19", email: nil, relogin: true).contains(#"login-prepare --relogin "$name""#), "relogin script")
+    check(!LoginLauncher.loginScript(cli: "/x/cs", name: "m19", email: nil).contains("--relogin"), "plain login script")
+    check(CredentialProblem.missing.detail.hasPrefix("are ") && CredentialProblem.rejected(401).detail.contains("401"), "error detail wording")
+}
+
+// MARK: hop markers on disk (temp store)
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cs-checks-\(getpid())")
+    setenv("CLAUDE_ACCOUNT_DIR", dir.path, 1)
+    defer { unsetenv("CLAUDE_ACCOUNT_DIR"); try? FileManager.default.removeItem(at: dir) }
+    let store = AccountStore()
+    store.writeHopMarker(id: "1-2", "m19", sessionID: "sess-a")
+    equal(try? String(contentsOf: Paths.hopMarker("1-2"), encoding: .utf8), "m19\n", "marker stays a bare name (pre-0.5 loops read it)")
+    equal(try? String(contentsOf: Paths.hopSessionMarker("1-2"), encoding: .utf8), "sess-a\n")
+    store.writeHopMarker(id: "3-4", "m04", sessionID: "sess-b")
+    try? FileManager.default.removeItem(at: Paths.hopMarker("3-4"))
+    store.pruneSessionMarkers(now: Date().addingTimeInterval(600))
+    check(FileManager.default.fileExists(atPath: Paths.hopSessionMarker("1-2").path), "session file next to a live marker kept")
+    check(!FileManager.default.fileExists(atPath: Paths.hopSessionMarker("3-4").path), "orphan session file (old loop took the marker) pruned")
+    store.writeHopMarker(id: "5-6", "m04")
+    check(!FileManager.default.fileExists(atPath: Paths.hopSessionMarker("5-6").path), "no session id -> no session file")
+}
+
+func oldRecForBlock() -> QuotaRecord { QuotaRecord(pct: 0, resetsAt: now.addingTimeInterval(-60), recordedAt: now.addingTimeInterval(-9000)) }
 
 // MARK: Updater
 do {

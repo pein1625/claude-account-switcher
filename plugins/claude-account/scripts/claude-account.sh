@@ -37,7 +37,8 @@ Usage:
   claude-account rename <old> <new> rename a saved snapshot (tokens and profile move; live login untouched)
   claude-account names              bare names, for shell completion
   claude-account next               name of the best account to hop to (lowest recorded 5h usage,
-                                    reset windows count as 0); exit 1 when every other account is exhausted
+                                    reset windows count as 0; with the app: the app's ranking, 7d first
+                                    when enabled); exit 1 when every other account is exhausted
   claude-account quota <pct> [resets_at]
                                     statusline entry point: record the live account's 5h usage; at or above
                                     the hop threshold write the next account's name to accounts/.hop and print it
@@ -50,6 +51,12 @@ Environment:
   CLAUDE_ACCOUNT_HOP_AT             5h usage percent that flags a hop (default 90)
   CLAUDE_ACCOUNT_AUTOHOP            1 = inside claude-as, restart on the next account automatically at the end
                                     of the turn that crossed the threshold (default: only hint; /exit hops)
+  CLAUDE_ACCOUNT_NO_APP             1 = never hand commands to Claude Switcher.app (see below)
+
+With Claude Switcher.app installed (~/.local/bin/claude-switcher), save / use / login / remove / rename run
+through the app's CLI: one implementation of the snapshot rules for both tools (the live token is filed under
+the account it really belongs to, a dead snapshot is never switched to). Without the app, this script does
+the work itself under the same lock file.
 EOF
 }
 
@@ -69,7 +76,11 @@ fmt_epoch_ms() {
 
 json_get() { printf '%s' "$1" | jq -r "$2"; }
 
-is_oauth_blob() { printf '%s' "${1:-}" | jq -e '.claudeAiOauth.refreshToken' >/dev/null 2>&1; }
+# Usable = both tokens present. Claude Switcher.app applies the same rule (OAuthBlob.isComplete): a blob only one
+# tool accepts lets this CLI switch into a login the app calls unreadable.
+is_oauth_blob() {
+  printf '%s' "${1:-}" | jq -e '(.claudeAiOauth.accessToken // "") != "" and (.claudeAiOauth.refreshToken // "") != ""' >/dev/null 2>&1
+}
 
 keychain_read()   { security find-generic-password -s "$1" -w 2>/dev/null; }
 keychain_write()  { security add-generic-password -U -a "$USER" -s "$1" -w "$2" >/dev/null; }
@@ -78,6 +89,15 @@ keychain_delete() { security delete-generic-password -s "$1" >/dev/null 2>&1 || 
 saved_blob_file() { printf '%s/%s.credentials.json' "$ACCOUNTS_DIR" "$1"; }
 profile_file()    { printf '%s/%s.json' "$ACCOUNTS_DIR" "$1"; }
 quota_file()      { printf '%s/%s.quota' "$ACCOUNTS_DIR" "$1"; }
+
+# Claude Switcher.app heartbeats here while it runs; it then owns .quota, .hop and every restart. Two hop
+# policies at once (this one on the statusline's 5h reading, the app's on both accounts' weekly pace) fight.
+switcher_alive() {
+  local f="$ACCOUNTS_DIR/.switcher/alive" m
+  [ -f "$f" ] || return 1
+  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+  [ $(( $(date +%s) - m )) -lt 120 ]
+}
 
 current_name() { name_for_uuid "$(json_get "$(live_profile)" '.accountUuid // empty' 2>/dev/null)"; }
 
@@ -401,22 +421,32 @@ cmd_names() {
 }
 
 cmd_next() {
-  local skip="${1:-}" f name score best="" best_score=101
+  local skip="${1:-}" f name score best="" best_score=101 cs
+  # the app ranks with live 5h + 7d readings (7d first when "ưu tiên 7d thấp" is on) and skips dead snapshots;
+  # .quota only carries the 5h number
+  if cs=$(app_cli); then "$cs" next; return; fi
   [ -n "$skip" ] || skip=$(current_name || true)
   for f in $(each_profile_file); do
     name=$(jq -r '.name' "$f")
     [ "$name" = "$skip" ] && continue
     score=$(quota_score "$name")
     [ "$score" -lt "$HOP_AT" ] 2>/dev/null || continue
+    is_oauth_blob "$(read_saved_blob "$name" || true)" || continue
     if [ "$score" -lt "$best_score" ]; then best="$name"; best_score="$score"; fi
   done
-  [ -n "$best" ] || { printf 'claude-account: no other account below %s%% 5h usage\n' "$HOP_AT" >&2; return 1; }
+  [ -n "$best" ] || { printf 'claude-account: no other usable account below %s%% 5h usage\n' "$HOP_AT" >&2; return 1; }
   printf '%s\n' "$best"
 }
 
 cmd_quota() {
   local pct="${1:-}" resets="${2:-0}" name next
   [ -n "$pct" ] || return 0
+  # the app measures every account from the API and plans per-session restarts; a statusline reading here would
+  # be filed under whatever account ~/.claude.json names (wrong once sessions of two accounts overlap)
+  if switcher_alive; then
+    [ -s "$HOP_FILE" ] && cat "$HOP_FILE"
+    return 0
+  fi
   pct=${pct%%.*}
   [ "$pct" -ge 0 ] 2>/dev/null || return 0
   name=$(current_name) || return 0
@@ -457,10 +487,38 @@ cmd_doctor() {
   [ "$ok" -eq 1 ]
 }
 
+# The app's CLI, when Claude Switcher.app is installed and answers.
+app_cli() {
+  [ "${CLAUDE_ACCOUNT_NO_APP:-}" = 1 ] && return 1
+  local cs="${CLAUDE_SWITCHER_BIN:-$HOME/.local/bin/claude-switcher}"
+  [ -x "$cs" ] && "$cs" --version >/dev/null 2>&1 || return 1
+  printf '%s' "$cs"
+}
+
+# Re-run this command holding .switcher/lock, the flock(2) the app takes around every store write, so a
+# switch here never interleaves with one there (or with a second copy of this script).
+relock() {
+  [ -n "${CLAUDE_ACCOUNT_LOCKED:-}" ] && return 0
+  local lock="$ACCOUNTS_DIR/.switcher/lock"
+  mkdir -p "$ACCOUNTS_DIR/.switcher"
+  if command -v lockf >/dev/null 2>&1; then
+    CLAUDE_ACCOUNT_LOCKED=1 exec lockf -k -t 30 "$lock" bash "${BASH_SOURCE[0]}" "$@"
+  elif command -v flock >/dev/null 2>&1; then
+    CLAUDE_ACCOUNT_LOCKED=1 exec flock -w 30 "$lock" bash "${BASH_SOURCE[0]}" "$@"
+  fi
+}
+
 main() {
   need jq
-  local cmd="${1:-}"
+  local cmd="${1:-}" cs
   [ $# -gt 0 ] && shift
+  case "$cmd" in
+    save|use|login|remove|rm|rename|mv)
+      if cs=$(app_cli); then exec "$cs" "$cmd" "$@"; fi ;;
+  esac
+  case "$cmd" in
+    save|use|remove|rm|rename|mv) relock "$cmd" "$@" ;;
+  esac
   case "$cmd" in
     save|use|list|current|remove|rename|names|login|next|quota) guard_config_dir ;;
   esac

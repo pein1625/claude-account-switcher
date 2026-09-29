@@ -49,6 +49,12 @@ Claude Code keeps a login in two places:
 
 Everything else in `~/.claude` (settings, hooks, agents, memory, projects) is shared across accounts and untouched.
 
+A snapshot counts as usable only when it holds both an access and a refresh token - the same rule Claude Switcher.app applies.
+
+### With Claude Switcher.app on the same Mac
+
+When `~/.local/bin/claude-switcher` is installed, `save`, `use`, `login`, `remove` and `rename` hand over to it (same arguments, same exit code), so the two tools cannot disagree about a snapshot. The app asks Anthropic whose token is live before filing it under an account, refuses to switch into a dead or wrong-owner snapshot, and moves its restart plan with every switch. Read-only commands (`list`, `current`, `next`, `quota`) stay in bash. `CLAUDE_ACCOUNT_NO_APP=1` keeps everything in bash. Without the app, this script takes the app's lock file (`~/.claude/accounts/.switcher/lock`, via `lockf`/`flock`) around every write.
+
 ## Requirements
 
 - macOS (Keychain via the `security` CLI). Linux falls back to the credentials file but has not been tested.
