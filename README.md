@@ -175,6 +175,12 @@ Một process `claude` giữ token trong RAM cả đời → chỉ đổi accoun
    lấy hội thoại mới nhất trong thư mục — nhầm sang session khác khi nhiều session chạy chung một thư mục). `use`
    thất bại → vẫn resume trên login đang live, session không bị mất. Session của account mới không bị đụng; nhiều
    session hop cùng lúc không tranh nhau một file.
+   **Còn việc chạy nền thì hoãn**: hook đọc transcript của session (`transcript_path`). Nếu còn background shell,
+   subagent async hoặc Monitor (chưa persistent, chưa quá timeout của nó) đã bắt đầu mà chưa có
+   `<task-notification>` kết thúc hay TaskStop, hook chưa kill. Plan được giữ, `restarts.log` ghi `deferred` kèm
+   các id. Thông báo hoàn tất mở một turn mới, và Stop của turn đó mới restart. Lý do: SIGTERM giết luôn việc nền,
+   còn `--resume` chỉ khôi phục hội thoại, không trả lại kết quả của việc nền. Một launch quá 2 giờ không còn được
+   tính, để một marker bị sót không chặn hop mãi.
 4. Rate limit giữa turn: hook ghi `events.log`, app đánh dấu account đó 100% và hop ngay; hook chờ tối đa 5s cho
    plan rồi restart luôn.
 5. Session "mồ côi": đang chạy trên account đã hết quota trong khi account live còn chỗ (ví dụ sau `/login` sang

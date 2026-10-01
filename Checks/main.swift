@@ -384,5 +384,36 @@ do {
     check(!Updater.upgradeCommand(dest: "/Applications", version: nil).contains("CLAUDE_SWITCHER_VERSION"), "no version -> latest")
 }
 
+// MARK: background work (the Stop hook defers a restart while any is pending)
+do {
+    let clock = ISO8601.parse("2026-10-01T02:10:00Z")!
+    func json(_ o: [String: Any], at: String = "2026-10-01T02:00:00.000Z") -> String {
+        var o = o; o["timestamp"] = at
+        return String(data: try! JSONSerialization.data(withJSONObject: o), encoding: .utf8)!
+    }
+    func result(_ r: [String: Any], at: String = "2026-10-01T02:00:00.000Z") -> String { json(["type": "user", "toolUseResult": r], at: at) }
+    func queued(_ id: String, _ status: String) -> String {
+        json(["type": "queue-operation", "operation": "enqueue", "content": "<task-notification>\n<task-id>\(id)</task-id>\n<status>\(status)</status>\n</task-notification>"])
+    }
+    func run(_ lines: [String]) -> [String] { BackgroundWork.pending(transcript: lines.joined(separator: "\n"), now: clock) }
+    let shell = result(["backgroundTaskId": "bmsj88w9j", "stdout": ""])
+    let agent = result(["isAsync": true, "status": "async_launched", "agentId": "a4dbb2adeccf14763"])
+    let monitor = result(["taskId": "b699dwcuc", "timeoutMs": 1_800_000, "persistent": false])
+    equal(run([shell, agent, monitor]), ["bmsj88w9j", "a4dbb2adeccf14763", "b699dwcuc"], "every launch shape is pending")
+    equal(run([shell, agent, monitor, queued("bmsj88w9j", "completed"), queued("a4dbb2adeccf14763", "failed"),
+               result(["task_id": "b699dwcuc", "message": "Successfully stopped task: b699dwcuc (tail -f)"])]),
+          [], "completed, failed and TaskStop-ed work is no longer pending")
+    equal(run([agent, queued("a4dbb2adeccf14763", "running")]), ["a4dbb2adeccf14763"], "a running notice is not an end")
+    let idle = json(["type": "user", "message": ["content": "<task-notification>\n<task-id>bmsj88w9j</task-id>\n<status>killed</status>\n</task-notification>"]])
+    equal(run([shell, idle]), [], "a notice delivered as a user message ends the task")
+    let echoed = result(["stdout": "Monitor started (task b699dwcuc ... Command running in background with ID: zzz <task-id>bmsj88w9j</task-id><status>completed</status>"])
+    equal(run([echoed]), [], "ids inside some command's output are not launches")
+    equal(run([shell, echoed]), ["bmsj88w9j"], "nor are they ends")
+    equal(run([result(["taskId": "bshort", "timeoutMs": 60_000, "persistent": false])]), [], "monitor past its own timeout")
+    equal(run([result(["taskId": "bforever", "timeoutMs": 3_600_000, "persistent": true])]), [], "persistent monitor never holds a hop")
+    equal(run([result(["backgroundTaskId": "oldjob1"], at: "2026-09-30T20:00:00.000Z")]), [], "launch older than maxAge")
+    equal(run(["not json", ""]), [], "garbage lines ignored")
+}
+
 print("\(total - failed)/\(total) checks passed")
 exit(failed == 0 ? 0 : 1)

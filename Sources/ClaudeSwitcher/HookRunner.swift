@@ -3,8 +3,8 @@ import ClaudeSwitcherCore
 
 /// `claude-switcher hook` - the Stop / StopFailure(rate_limit) hook body. Ends THIS claude process at its turn
 /// boundary when the app listed its pid in `.switcher/restart.json`; the `claude-as` loop around the process
-/// then reads the relaunch target and runs `claude --continue` as that account. Sessions not started through a
-/// loop are left alone. On a rate-limit failure the event is reported first so the app can decide a hop.
+/// then reads the relaunch target and resumes the conversation as that account. Sessions not started through a
+/// loop are left alone, and a turn end with background work still running is deferred to a later Stop. On a rate-limit failure the event is reported first so the app can decide a hop.
 enum HookRunner {
     static func run(stdin: Data, env: [String: String], now: Date = Date()) -> Int32 {
         let store = AccountStore()
@@ -29,6 +29,17 @@ enum HookRunner {
         // A plan only moves sessions onto the live account. One naming another account is stale (the live login
         // changed since): restarting on it would switch the live login away again. The app retargets it.
         guard target == store.liveName(profiles: store.loadProfiles(), live: store.liveOAuthAccount()) else { return 0 }
+        // Background shells, subagents and monitors die with the process and --resume never brings their results
+        // back. A normal turn end waits for them: the plan stays, and the turn their completion notice starts
+        // ends in another Stop that restarts. A rate-limited session cannot make progress, so it restarts anyway.
+        if event == "Stop", let path = json["transcript_path"] as? String,
+           let transcript = try? String(contentsOfFile: path, encoding: .utf8) {
+            let pending = BackgroundWork.pending(transcript: transcript, now: now)
+            if !pending.isEmpty {
+                store.appendRestartLog("\(ISO8601.string(now))\tdeferred\thop=\(target)\tpid=\(pid)\tpending=\(pending.joined(separator: ","))")
+                return 0
+            }
+        }
 
         if let id = env["CLAUDE_AS_ID"], !id.isEmpty {
             store.writeHopMarker(id: id, target, sessionID: json["session_id"] as? String)
