@@ -36,7 +36,9 @@ file mang cờ quarantine, mà chỉ trình duyệt / AirDrop / Slack mới gắ
 
 ### Cách 2 — tải file dmg
 
-Link: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.5.1.dmg
+Bản mới nhất (0.5.1): https://github.com/pein1625/claude-account-switcher/releases/download/v0.5.1/ClaudeSwitcher-0.5.1.dmg
+
+Bản sao trong repo: https://raw.githubusercontent.com/pein1625/claude-account-switcher/main/releases/ClaudeSwitcher-0.5.1.dmg
 
 1. Mở dmg, kéo `ClaudeSwitcher` vào `Applications` (cửa sổ có mũi tên).
 2. Mở app từ Applications. Vì app ký adhoc (chưa notarize), macOS hiện hộp thoại:

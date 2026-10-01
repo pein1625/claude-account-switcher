@@ -119,7 +119,9 @@ ship: test
 	@[ "$$(cat releases/latest 2>/dev/null)" != "$(VERSION)" ] || { echo "ship: $(VERSION) is already published - bump AppInfo.version"; exit 1; }
 	@! gh release view "v$(VERSION)" >/dev/null 2>&1 || { echo "ship: GitHub Release v$(VERSION) already exists"; exit 1; }
 	$(MAKE) publish-file
-	sed -i '' -E 's#releases/ClaudeSwitcher-[0-9.]+\.dmg#releases/ClaudeSwitcher-$(VERSION).dmg#; s#Phiên bản [0-9.]+ #Phiên bản $(VERSION) #' README.md
+	sed -i '' -E 's#releases/download/v[0-9.]+/ClaudeSwitcher-[0-9.]+\.dmg#releases/download/v$(VERSION)/ClaudeSwitcher-$(VERSION).dmg#; s#releases/ClaudeSwitcher-[0-9.]+\.dmg#releases/ClaudeSwitcher-$(VERSION).dmg#; s#Bản mới nhất \([0-9.]+\)#Bản mới nhất ($(VERSION))#; s#Phiên bản [0-9.]+ #Phiên bản $(VERSION) #' README.md
+	@grep -qF "releases/download/v$(VERSION)/ClaudeSwitcher-$(VERSION).dmg" README.md && grep -qF "main/releases/ClaudeSwitcher-$(VERSION).dmg" README.md \
+	  || { echo "ship: README download links not on $(VERSION) - fix README before shipping"; git checkout -- README.md; exit 1; }
 	git add releases README.md
 	git commit -q -m "Release $(VERSION) dmg"
 	git push -q origin main
