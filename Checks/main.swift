@@ -217,6 +217,14 @@ do {
     check(block.hasPrefix(ShellInstaller.markBegin + "\n") && block.hasSuffix(ShellInstaller.markEnd), "rc block delimited by the plugin's markers")
     check(block.contains("CLAUDE_AS_ID=\"$id\"") && block.contains("hop-$id") && block.contains("alias claude='claude-as'"), "rc block content")
     check(block.contains("printf 'claude-as: resuming as %s\\n'"), "printf newline escape survives (raw string)")
+    check(block.contains(#"set -- "${keep[@]}" --resume "$sid""#) && block.contains(#"_claude_as_keep "$@"; keep=("${_claude_as_kept[@]}")"#),
+          "resume carries the launch options")
+    for sh in ["/bin/bash", "/bin/zsh"] {
+        let r = try? Shell.runSync(sh, ["-n", "-c", block], timeout: 10)
+        check(r?.ok == true, "rc block parses under \(sh): \(r?.stderr ?? "-")")
+        let probe = block + "\n" + #"_claude_as_keep -c --model opus --add-dir a b --session-id S "fix it"; printf '%s|' "${_claude_as_kept[@]}""#
+        equal((try? Shell.runSync(sh, ["-c", probe], timeout: 10))?.stdout ?? "", "--model|opus|--add-dir|a|b|", "kept options under \(sh)")
+    }
 
     let empty = ShellInstaller.replaceBlock(in: "", with: "B1\nB2")
     equal(empty, "\nB1\nB2\n", "append to empty")

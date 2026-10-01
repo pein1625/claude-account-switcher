@@ -173,7 +173,7 @@ Một process `claude` giữ token trong RAM cả đời → chỉ đổi accoun
    session id vào `hop-<CLAUDE_AS_ID>.session`, rồi `kill -TERM` chính nó. Vòng lặp `claude-as` đọc marker của
    **riêng nó**, `claude-switcher use <đích>`, chạy `claude --resume <session id>` (thiếu id → `--continue`, vốn
    lấy hội thoại mới nhất trong thư mục — nhầm sang session khác khi nhiều session chạy chung một thư mục). `use`
-   thất bại → vẫn resume trên login đang live, session không bị mất. Session của account mới không bị đụng; nhiều
+   thất bại → vẫn resume trên login đang live, session không bị mất. Resume mang theo **cờ khởi động** ban đầu (`--model`, `--permission-mode`, `--add-dir`…). Chỉ bỏ cờ chọn hội thoại (`-c`, `-r`, `--session-id`, `--fork-session`, `--from-pr`, `--teleport`) và prompt mở đầu, vì prompt đó đã gửi rồi. Session của account mới không bị đụng; nhiều
    session hop cùng lúc không tranh nhau một file.
    **Còn việc chạy nền thì hoãn**: hook đọc transcript của session (`transcript_path`). Nếu còn background shell,
    subagent async hoặc Monitor (chưa persistent, chưa quá timeout của nó) đã bắt đầu mà chưa có

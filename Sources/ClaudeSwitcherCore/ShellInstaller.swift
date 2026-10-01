@@ -62,9 +62,42 @@ public enum ShellInstaller {
         # claude-as [account] [claude args...]   (written by Claude Switcher.app; `claude` is aliased to it)
         #   Starts claude, optionally after switching to <account>. When Claude Switcher moves this session to
         #   another account, its Stop hook ends the process at the end of a turn; this loop then switches the
-        #   login and resumes the same conversation (`claude --resume <its id>`, else `--continue`).
+        #   login and resumes the same conversation (`claude --resume <its id>`, else `--continue`) with the launch
+        #   options it was started with.
+        # Launch options to carry onto `claude --resume`: everything except what picks the conversation (-c, -r,
+        # --session-id, --fork-session, --from-pr, --teleport) and the opening prompt, which was already sent.
+        # Values are consumed the way claude parses them: <x> takes one, [x] one unless it starts with -, <x...> until the next flag.
+        _claude_as_keep() {
+          local a mode="" drop=""
+          _claude_as_kept=()
+          for a in "$@"; do
+            case "$mode" in
+              one) mode=""; [ -z "$drop" ] && _claude_as_kept+=("$a"); continue ;;
+              opt) mode=""; case "$a" in -*) ;; *) [ -z "$drop" ] && _claude_as_kept+=("$a"); continue ;; esac ;;
+              many) case "$a" in -*) mode="" ;; *) _claude_as_kept+=("$a"); continue ;; esac ;;
+            esac
+            drop=""
+            case "$a" in
+              -c|--continue|--fork-session) ;;
+              --resume=*|--session-id=*|--from-pr=*|--teleport=*) ;;
+              -r|--resume|--from-pr|--teleport) drop=1; mode=opt ;;
+              --session-id) drop=1; mode=one ;;
+              --add-dir|--allowedTools|--allowed-tools|--betas|--disallowedTools|--disallowed-tools|--file|--mcp-config|--tools)
+                _claude_as_kept+=("$a"); mode=many ;;
+              --agent|--agents|--append-system-prompt|--append-system-prompt-file|--autocompact|--client-data-url|--debug-file|\
+              --effort|--environment|--fallback-model|--input-format|--json-schema|--max-budget-usd|--model|-n|--name|\
+              --output-format|--permission-mode|--permission-prompts|--permission-prompt-tool|--plugin-dir|--plugin-url|\
+              --remote-control-session-name-prefix|--setting-sources|--settings|--system-prompt|--system-prompt-file|\
+              --system-prompt-snapshot)
+                _claude_as_kept+=("$a"); mode=one ;;
+              -d|--debug|--cloud|--prompt-suggestions|--remote-control|-w|--worktree)
+                _claude_as_kept+=("$a"); mode=opt ;;
+              -*) _claude_as_kept+=("$a") ;;
+            esac
+          done
+        }
         claude-as() {
-          local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" cs="$HOME/.local/bin/claude-switcher" sw id next sid rc
+          local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" cs="$HOME/.local/bin/claude-switcher" sw id next sid rc keep
           sw="$dir/.switcher"
           if [ -n "${1:-}" ] && [ -f "$dir/$1.json" ]; then
             "$cs" use "$1" || return $?
@@ -73,6 +106,7 @@ public enum ShellInstaller {
           case " $* " in
             *" -p "*|*" --print "*) CLAUDE_AS_LOOP=1 command claude "$@"; return $? ;;
           esac
+          _claude_as_keep "$@"; keep=("${_claude_as_kept[@]}")
           while :; do
             id="$$-$RANDOM$RANDOM"
             CLAUDE_AS_LOOP=1 CLAUDE_AS_ID="$id" command claude "$@"
@@ -95,7 +129,7 @@ public enum ShellInstaller {
             fi
             # --continue would pick the newest conversation in this directory - another session's, when
             # several run here; the hook hands over this one's id
-            if [ -n "$sid" ]; then set -- --resume "$sid"; else set -- --continue; fi
+            if [ -n "$sid" ]; then set -- "${keep[@]}" --resume "$sid"; else set -- "${keep[@]}" --continue; fi
           done
         }
         # an alias another startup file already set for `claude` is kept, not overridden

@@ -94,9 +94,42 @@ cat >> "$RC" <<'RC_EOF'
 # claude-as [account] [claude args...]
 #   Start claude (optionally after switching to <account>). When the statusline flags the 5h
 #   quota (accounts/.hop), the next exit switches to the flagged account and resumes the
-#   conversation with --continue. CLAUDE_ACCOUNT_AUTOHOP=1 makes that exit automatic.
+#   conversation with --continue and the launch options it was started with. CLAUDE_ACCOUNT_AUTOHOP=1 makes
+#   that exit automatic.
+# Launch options to carry onto `claude --resume`: everything except what picks the conversation (-c, -r,
+# --session-id, --fork-session, --from-pr, --teleport) and the opening prompt, which was already sent.
+# Values are consumed the way claude parses them: <x> takes one, [x] one unless it starts with -, <x...> until the next flag.
+_claude_as_keep() {
+  local a mode="" drop=""
+  _claude_as_kept=()
+  for a in "$@"; do
+    case "$mode" in
+      one) mode=""; [ -z "$drop" ] && _claude_as_kept+=("$a"); continue ;;
+      opt) mode=""; case "$a" in -*) ;; *) [ -z "$drop" ] && _claude_as_kept+=("$a"); continue ;; esac ;;
+      many) case "$a" in -*) mode="" ;; *) _claude_as_kept+=("$a"); continue ;; esac ;;
+    esac
+    drop=""
+    case "$a" in
+      -c|--continue|--fork-session) ;;
+      --resume=*|--session-id=*|--from-pr=*|--teleport=*) ;;
+      -r|--resume|--from-pr|--teleport) drop=1; mode=opt ;;
+      --session-id) drop=1; mode=one ;;
+      --add-dir|--allowedTools|--allowed-tools|--betas|--disallowedTools|--disallowed-tools|--file|--mcp-config|--tools)
+        _claude_as_kept+=("$a"); mode=many ;;
+      --agent|--agents|--append-system-prompt|--append-system-prompt-file|--autocompact|--client-data-url|--debug-file|\
+      --effort|--environment|--fallback-model|--input-format|--json-schema|--max-budget-usd|--model|-n|--name|\
+      --output-format|--permission-mode|--permission-prompts|--permission-prompt-tool|--plugin-dir|--plugin-url|\
+      --remote-control-session-name-prefix|--setting-sources|--settings|--system-prompt|--system-prompt-file|\
+      --system-prompt-snapshot)
+        _claude_as_kept+=("$a"); mode=one ;;
+      -d|--debug|--cloud|--prompt-suggestions|--remote-control|-w|--worktree)
+        _claude_as_kept+=("$a"); mode=opt ;;
+      -*) _claude_as_kept+=("$a") ;;
+    esac
+  done
+}
 claude-as() {
-  local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" next rc
+  local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" next rc keep
   if [ -n "${1:-}" ] && [ -f "$dir/$1.json" ]; then
     claude-account use "$1" || return $?
     shift
@@ -104,6 +137,7 @@ claude-as() {
   case " $* " in
     *" -p "*|*" --print "*) CLAUDE_AS_LOOP=1 command claude "$@"; return $? ;;
   esac
+  _claude_as_keep "$@"; keep=("${_claude_as_kept[@]}")
   while :; do
     CLAUDE_AS_LOOP=1 command claude "$@"
     rc=$?
@@ -115,7 +149,7 @@ claude-as() {
     else
       printf 'claude-as: switch to %s failed - resuming on the current login\n' "$next" >&2
     fi
-    set -- --continue
+    set -- "${keep[@]}" --continue
   done
 }
 if [ -n "${ZSH_VERSION:-}" ]; then
