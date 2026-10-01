@@ -98,7 +98,10 @@ public enum ShellInstaller {
             if [ -n "$sid" ]; then set -- --resume "$sid"; else set -- --continue; fi
           done
         }
-        alias claude='claude-as'
+        # an alias another startup file already set for `claude` is kept, not overridden
+        case "$(alias claude 2>/dev/null)" in
+          ''|*claude-as*) alias claude='claude-as' ;;
+        esac
         # <<< claude-account <<<
         """#
     }
@@ -114,18 +117,25 @@ public enum ShellInstaller {
         return block.contains("claude-switcher") ? .ours : .plugin
     }
 
+    /// The first end marker and the begin marker closest before it. A begin marker whose block lost its end
+    /// (a truncated earlier write, with the user's own lines appended after it) stays outside the range, so a
+    /// replace never swallows those lines.
+    static func blockRange(_ lines: [String]) -> ClosedRange<Int>? {
+        guard let e = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == markEnd }),
+              let b = lines[...e].lastIndex(where: { $0.trimmingCharacters(in: .whitespaces) == markBegin }) else { return nil }
+        return b...e
+    }
+
     public static func existingBlock(in text: String) -> String? {
         let lines = text.components(separatedBy: "\n")
-        guard let b = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == markBegin }),
-              let e = lines[b...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == markEnd }) else { return nil }
-        return lines[b...e].joined(separator: "\n")
+        return blockRange(lines).map { lines[$0].joined(separator: "\n") }
     }
 
     /// Replaces the marked block (or appends one); `nil` removes it.
     public static func replaceBlock(in text: String, with block: String?) -> String {
         var lines = text.components(separatedBy: "\n")
-        if let b = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == markBegin }),
-           let e = lines[b...].firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == markEnd }) {
+        if let range = blockRange(lines) {
+            let (b, e) = (range.lowerBound, range.upperBound)
             var start = b
             if block == nil, start > 0, lines[start - 1].isEmpty { start -= 1 }
             lines.removeSubrange(start...e)
@@ -140,8 +150,52 @@ public enum ShellInstaller {
         return out + "\n" + block + "\n"
     }
 
+    public struct Conflict: Equatable {
+        public let line: Int
+        public let text: String
+        public init(line: Int, text: String) { self.line = line; self.text = text }
+    }
+
+    /// Lines outside the marked block that alias `claude` or `claude-as`, or define a `claude-as` function: names
+    /// the block defines, so one of the two definitions would silently shadow the other. `alias claude='claude-as'`
+    /// is the same wiring (plugin users add it by hand) and is not a conflict.
+    public static func conflicts(in text: String) -> [Conflict] {
+        let lines = text.components(separatedBy: "\n")
+        let block = blockRange(lines)
+        return lines.indices.compactMap { i in
+            let line = lines[i].trimmingCharacters(in: .whitespaces)
+            guard block?.contains(i) != true, !line.hasPrefix("#"), redefinesOurNames(line) else { return nil }
+            return Conflict(line: i + 1, text: line)
+        }
+    }
+
+    static func redefinesOurNames(_ line: String) -> Bool {
+        let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard let first = words.first else { return false }
+        if first == "alias" {
+            return words.dropFirst().contains { w in
+                guard !w.hasPrefix("-"), let eq = w.firstIndex(of: "=") else { return false }
+                let name = w[..<eq], value = w[w.index(after: eq)...]
+                return name == "claude-as" || (name == "claude" && !["claude-as", "'claude-as'", "\"claude-as\""].contains(String(value)))
+            }
+        }
+        let isKeyword = first == "function"
+        guard let fn = isKeyword ? words.dropFirst().first : first, fn.hasPrefix("claude-as") else { return false }
+        let bare = fn.hasSuffix("()") ? String(fn.dropLast(2)) : fn
+        guard bare == "claude-as" else { return false }
+        return isKeyword || fn.hasSuffix("()") || (words.count > 1 && words[1].hasPrefix("("))
+    }
+
+    public static func conflictMessage(rc: URL, _ conflicts: [Conflict]) -> String {
+        "\(rc.path) đã có sẵn alias/hàm trùng tên với claude-as (claude, claude-as) — sửa hoặc xoá rồi cài lại:\n"
+            + conflicts.map { "  dòng \($0.line): \($0.text)" }.joined(separator: "\n")
+    }
+
+    /// Refuses to write while the rc already defines one of our names elsewhere, so neither definition is lost.
     public static func installRC(rc: URL) throws {
         let existing = (try? String(contentsOf: rc, encoding: .utf8)) ?? ""
+        let found = conflicts(in: existing)
+        guard found.isEmpty else { throw ShellError(conflictMessage(rc: rc, found)) }
         if FileManager.default.fileExists(atPath: rc.path) {
             let backup = rc.appendingPathExtension("bak-\(Int(Date().timeIntervalSince1970))")
             try FileManager.default.copyItem(at: rc, to: backup)

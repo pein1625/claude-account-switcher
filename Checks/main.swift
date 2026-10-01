@@ -229,6 +229,33 @@ do {
     equal(ShellInstaller.replaceBlock(in: "no block\n", with: nil), "no block\n", "remove without block is a no-op")
     check(ShellInstaller.existingBlock(in: pluginRC)?.contains("claude-account use") == true, "existing block detected")
 
+    check(block.contains("case \"$(alias claude 2>/dev/null)\" in"), "block keeps an alias claude set elsewhere")
+    equal(ShellInstaller.conflicts(in: pluginRC), [], "inside the block and alias claude='claude-as' are not conflicts")
+    equal(ShellInstaller.conflicts(in: block), [], "our own block is not a conflict")
+    let userRC = """
+    alias ll='ls -l'
+    alias claude='claude --dangerously-skip-permissions'
+    # alias claude='old'
+    alias -g claude-as=x
+    alias claude="claude-as"
+    claude-as() { echo; }
+    function claude-as { :; }
+    claude-as m07
+    alias claude='claude-as --x'
+    """
+    equal(ShellInstaller.conflicts(in: userRC).map(\.line), [2, 4, 6, 7, 9], "user aliases and functions on our names")
+    let truncated = "# >>> claude-account >>>\nclaude-as() {\n}\nalias mine=x\nwt() { :; }\n\n# >>> claude-account >>>\nclaude-as() { new; }\n# <<< claude-account <<<\n"
+    equal(ShellInstaller.existingBlock(in: truncated), "# >>> claude-account >>>\nclaude-as() { new; }\n# <<< claude-account <<<", "block = begin closest to the end marker")
+    check(ShellInstaller.replaceBlock(in: truncated, with: "B").contains("alias mine=x\nwt() { :; }"), "replace keeps lines after a truncated block")
+    equal(ShellInstaller.conflicts(in: truncated).map(\.line), [2], "a truncated block's claude-as is a conflict")
+    let rcDir = FileManager.default.temporaryDirectory.appendingPathComponent("cs-rc-\(getpid())")
+    try? FileManager.default.createDirectory(at: rcDir, withIntermediateDirectories: true)
+    let rcURL = rcDir.appendingPathComponent(".zshrc")
+    try? "alias claude='claude --foo'\n".write(to: rcURL, atomically: true, encoding: .utf8)
+    check((try? ShellInstaller.installRC(rc: rcURL)) == nil, "installRC refuses on conflict")
+    equal(try? String(contentsOf: rcURL, encoding: .utf8), "alias claude='claude --foo'\n", "rc untouched on conflict")
+    try? FileManager.default.removeItem(at: rcDir)
+
     equal(ShellInstaller.shellQuote("a'b"), "'a'\\''b'")
     let shim = ShellInstaller.shimText(appBinary: "/Applications/X.app/Contents/MacOS/X")
     check(shim.hasPrefix("#!/bin/sh\n") && shim.contains("exec \"$APP\" \"$@\"") && shim.contains("= hook ] && exit 0"), "shim shape")

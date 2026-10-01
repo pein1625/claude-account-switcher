@@ -71,6 +71,10 @@ App hỏi **“Bật hop tự động?”** → *Cài*. Nó ghi (đều có back
 | hook `Stop` + `StopFailure(rate_limit)` | `~/.claude/settings.json` | kết thúc đúng session cần hop ở cuối turn |
 | hàm `claude-as` + `alias claude='claude-as'` | `~/.zshrc` (hoặc `~/.bashrc`) | vòng lặp mở lại `claude --continue` bằng account mới |
 
+Trước khi ghi, app quét file rc: nếu ngoài block `# >>> claude-account >>>` đã có `alias claude=…` (trỏ chỗ khác
+`claude-as`), `alias claude-as=…` hay hàm `claude-as()` thì **không ghi gì**, báo số dòng để bạn sửa rồi cài lại (Doctor
+cũng cảnh báo). Alias `claude` đặt ở file khởi động khác (oh-my-zsh, `.zprofile`…) được giữ nguyên, không bị đè.
+
 Mở terminal mới sau đó. Account đang đăng nhập được **tự lưu** (tên = phần trước `@` của email; ⋯ › Đổi tên nếu
 muốn). Thêm account thứ hai: **Thêm account…** → tên, email → app tự chạy `claude auth login` ngầm và mở trang
 đăng nhập trong **cửa sổ riêng tư** của trình duyệt (Chrome/Brave/Edge/Firefox; Safari không có chế độ này qua dòng

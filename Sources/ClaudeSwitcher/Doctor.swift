@@ -73,6 +73,10 @@ enum Doctor {
         if let rc = try? String(contentsOf: ShellInstaller.rcFile(), encoding: .utf8), !rc.contains("alias claude=") , setup.rc != .missing {
             add(.warn, "Thiếu alias claude='claude-as' → phải gõ claude-as thay cho claude")
         }
+        if let rc = try? String(contentsOf: ShellInstaller.rcFile(), encoding: .utf8) {
+            let found = ShellInstaller.conflicts(in: rc)
+            if !found.isEmpty { add(.warn, ShellInstaller.conflictMessage(rc: ShellInstaller.rcFile(), found)) }
+        }
         if FileManager.default.isExecutableFile(atPath: Paths.pluginCLI.path) {
             add(.ok, "Plugin claude-account cũng có mặt (\(Paths.pluginCLI.path)) — hai tool dùng chung store")
         }

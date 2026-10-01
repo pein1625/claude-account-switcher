@@ -25,6 +25,29 @@ if [ "$(uname -s)" = Darwin ]; then
   command -v security >/dev/null 2>&1 || { echo "install.sh: missing dependency: security (macOS Keychain CLI)" >&2; exit 1; }
 fi
 
+# The rc block defines claude-as and _claude_as_names; a second definition outside the block would
+# shadow ours or be shadowed by it, so stop before touching anything.
+# Only the begin marker closest before the end marker opens the block: an earlier begin whose block lost its
+# end (a truncated write, user lines appended after it) is outside, as are the lines that follow it.
+if [ -f "$RC" ]; then
+  conflicts=$(awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    function hit(t) {
+      return t !~ /^#/ && (t ~ /^alias[ \t].*(^|[ \t])(claude-as|_claude_as_names)=/ ||
+        t ~ /^function[ \t]+(claude-as|_claude_as_names)([ \t(]|$)/ || t ~ /^(claude-as|_claude_as_names)[ \t]*\(\)/)
+    }
+    { t=$0; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t) }
+    t==b { printf "%s", buf; buf=""; inb=1; next }
+    t==e && inb && !done { buf=""; inb=0; done=1; next }
+    hit(t) { line=sprintf("  line %d: %s\n", NR, t); if (inb && !done) buf=buf line; else printf "%s", line }
+    END { printf "%s", buf }
+  ' "$RC")
+  if [ -n "$conflicts" ]; then
+    echo "install.sh: $RC already defines a name claude-as uses (claude-as, _claude_as_names). Remove or rename it, then rerun:" >&2
+    echo "$conflicts" >&2
+    exit 1
+  fi
+fi
+
 chmod +x "$HERE/claude-account.sh"
 mkdir -p "$BIN_DIR"
 rm -f "$SHIM"
@@ -55,7 +78,12 @@ esac
 
 if [ -f "$RC" ] && grep -qF "$MARK_BEGIN" "$RC"; then
   tmp=$(mktemp "$RC.XXXXXX")
-  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '$0==b{skip=1} !skip{print} $0==e{skip=0}' "$RC" > "$tmp" && mv "$tmp" "$RC"
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    $0==b && !done { printf "%s", buf; buf=$0 "\n"; inb=1; next }
+    inb { buf=buf $0 "\n"; if ($0==e) { buf=""; inb=0; done=1 }; next }
+    { print }
+    END { printf "%s", buf }
+  ' "$RC" > "$tmp" && mv "$tmp" "$RC"
   verb="updated"
 else
   verb="added  "

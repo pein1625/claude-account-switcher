@@ -180,7 +180,7 @@ then `/plugin uninstall claude-account@claude-account-switcher`. The live login 
 skills/claude-account/SKILL.md    in-session skill (/claude-account:claude-account)
 hooks/hooks.json                  SessionStart install hint, UserPromptSubmit hop hint, Stop + StopFailure(rate_limit) auto-hop
 scripts/claude-account.sh         the tool (save/use/list/login/next/quota/...)
-scripts/install.sh                shim + claude-as shell function + completion + doctor
+scripts/install.sh                shim + claude-as shell function + completion + doctor (refuses if the rc already defines claude-as)
 scripts/session-hint.sh           SessionStart hook body
 scripts/hop-hint.sh               UserPromptSubmit hook body
 scripts/autohop-stop.sh           Stop/StopFailure hook body (kill only with CLAUDE_ACCOUNT_AUTOHOP=1 inside claude-as)
