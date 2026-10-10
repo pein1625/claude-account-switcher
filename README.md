@@ -78,18 +78,21 @@ Trước khi ghi, app quét file rc: nếu ngoài block `# >>> claude-account >>
 cũng cảnh báo). Alias `claude` đặt ở file khởi động khác (oh-my-zsh, `.zprofile`…) được giữ nguyên, không bị đè.
 
 Mở terminal mới sau đó. Account đang đăng nhập được **tự lưu** (tên = phần trước `@` của email; ⋯ › Đổi tên nếu
-muốn). Thêm account thứ hai: **Thêm account…** → tên, email → app tự chạy `claude auth login` ngầm và mở trang
-đăng nhập trong **cửa sổ riêng tư** của trình duyệt (Chrome/Brave/Edge/Firefox; Safari không có chế độ này qua dòng
-lệnh → cửa sổ thường). Đăng nhập bằng account mới, bấm Authorize → app nhận kết quả, snapshot, báo xong ngay trong
-menu. Login hiện tại không bị đụng, không cần Terminal.
+muốn). Thêm account thứ hai: **Thêm account…** → tên, email → app tự chạy `claude auth login` ngầm và hiện **link
+đăng nhập** (app không tự mở trình duyệt). *Copy link*, gửi/mở ở trình duyệt (máy nào cũng được) đang đăng nhập
+claude.ai bằng account mới, bấm Authorize. Trình duyệt chuyển tới `http://localhost:…/callback?code=…` — ở máy khác
+trang này báo không kết nối được, bình thường: copy nguyên link trên thanh địa chỉ, dán vào ô của panel → app chuyển
+về `claude`, snapshot, báo xong ngay trong menu. Mở link ngay trên máy này thì app tự nhận, không cần dán. Login hiện
+tại không bị đụng, không cần Terminal.
 
-Vì sao cửa sổ riêng tư: trình duyệt đang giữ phiên claude.ai của account nào thì OAuth **tự duyệt account đó**, không
-hỏi, kể cả khi URL có `login_hint`. App từ chối lưu nếu account vừa đăng nhập trùng snapshot đã có (nút *Thử lại
-trong cửa sổ riêng tư*). Panel đăng nhập có *Mở lại*, *Copy link*, ô dán code (khi dùng URL dự phòng), *Huỷ*.
+Trình duyệt đang giữ phiên claude.ai của account nào thì OAuth **tự duyệt account đó**, không hỏi, kể cả khi URL có
+`login_hint` → mở link ở cửa sổ riêng tư / profile khác nếu cần. App từ chối lưu nếu account vừa đăng nhập trùng
+snapshot đã có (nút *Thử lại*). Panel đăng nhập có *Copy link*, ô dán link kết quả (hoặc code khi chỉ có URL dự
+phòng), *Huỷ*.
 
 Đăng nhập theo cách khác (`/login` trong một session, `claude auth login` ngoài terminal) cũng được: app phát hiện
 login live chưa có snapshot, kiểm tra token trong Keychain đúng là của account đó (`GET /api/oauth/profile`), rồi tự
-lưu. Cài đặt › Chung có tắt (*Tự lưu login mới*, *cửa sổ riêng tư*, *đăng nhập qua Terminal* để khắc phục sự cố).
+lưu. Cài đặt › Chung có tắt (*Tự lưu login mới*, *đăng nhập qua Terminal* để khắc phục sự cố).
 
 ## Cách hoạt động
 

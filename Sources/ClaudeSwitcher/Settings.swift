@@ -7,7 +7,7 @@ struct AppSettings {
 
     enum Key: String {
         case autoSwitch, hopAt, sevenDayAt, pollSeconds, notify, terminalApp, restartSessions, extraPath, cooldownMinutes,
-             autoSaveLogin, loginPrivateWindow, loginViaTerminal, pollMigrated300, prefer7d, sevenDayMargin, nearResetHours
+             autoSaveLogin, loginViaTerminal, pollMigrated300, prefer7d, sevenDayMargin, nearResetHours
     }
 
     static func register() {
@@ -22,7 +22,6 @@ struct AppSettings {
             Key.extraPath.rawValue: "",
             Key.cooldownMinutes.rawValue: 10,
             Key.autoSaveLogin.rawValue: true,
-            Key.loginPrivateWindow.rawValue: true,
             Key.loginViaTerminal.rawValue: false,
             Key.prefer7d.rawValue: true,
             Key.sevenDayMargin.rawValue: 10,
@@ -60,6 +59,5 @@ struct AppSettings {
                    nearResetHours: nearResetHours)
     }
     static var autoSaveLogin: Bool { defaults.bool(forKey: Key.autoSaveLogin.rawValue) }
-    static var loginPrivateWindow: Bool { defaults.bool(forKey: Key.loginPrivateWindow.rawValue) }
     static var loginViaTerminal: Bool { defaults.bool(forKey: Key.loginViaTerminal.rawValue) }
 }

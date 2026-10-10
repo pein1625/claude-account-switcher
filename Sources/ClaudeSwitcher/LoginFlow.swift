@@ -3,7 +3,9 @@ import ClaudeSwitcherCore
 
 enum LoginPhase: Equatable {
     case starting
-    case waitingBrowser
+    /// link ready to copy; its redirect is a localhost callback - paste the address the browser lands on
+    case awaitingLink
+    /// only the printed fallback link was seen; its page ends on a code to paste
     case needCode
     case finishing
     case done(String)
@@ -18,13 +20,15 @@ struct LoginState: Equatable {
     var relogin = false
     var phase: LoginPhase = .starting
     var url: URL?
-    var openedIn: String?
     var transcript: String = ""
+    var lastError: String?
 }
 
 /// In-app `claude auth login`: runs claude on a pty inside a scratch CLAUDE_CONFIG_DIR, intercepts its browser
-/// launch (a fake `open` first on PATH logs the URL instead), opens that URL itself - in a private window by
-/// default - and snapshots the result. The live login is never touched.
+/// launch (a fake `open` first on PATH logs the URL instead) and hands the link to the user to open wherever
+/// the right claude.ai session lives. The user pastes back the localhost callback address the browser lands on
+/// (or the code of the fallback page); the app delivers it to claude and snapshots the result. No browser is
+/// opened by the app, and the live login is never touched.
 @MainActor
 final class LoginFlow {
     private(set) var state: LoginState
@@ -32,17 +36,15 @@ final class LoginFlow {
     private let ctx: Switcher.LoginContext
     private var proc: PTYProcess?
     private var raw = Data()
-    private var openedURL = false
+    private var gotURL = false
     private var outputURLScheduled = false
     private var lastOpenLogSize = 0
     private let onChange: (LoginState) -> Void
-    private let privateWindow: Bool
 
     var name: String { state.name }
 
-    init(name: String, email: String?, relogin: Bool = false, switcher: Switcher, privateWindow: Bool, onChange: @escaping (LoginState) -> Void) async throws {
+    init(name: String, email: String?, relogin: Bool = false, switcher: Switcher, onChange: @escaping (LoginState) -> Void) async throws {
         self.switcher = switcher
-        self.privateWindow = privateWindow
         self.onChange = onChange
         state = LoginState(name: name, email: email, relogin: relogin)
         ctx = try await switcher.loginPrepare(name: name, relogin: relogin)
@@ -54,7 +56,7 @@ final class LoginFlow {
         let bin = ctx.scratch.appendingPathComponent("bin")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let shim = bin.appendingPathComponent("open")
-        try "#!/bin/sh\n# claude-switcher: records the URL claude wanted to open; the app opens it itself\nprintf '%s\\n' \"$@\" >> \"$CLAUDE_SWITCHER_OPEN_LOG\"\nexit 0\n"
+        try "#!/bin/sh\n# claude-switcher: records the URL claude wanted to open; the app shows it instead\nprintf '%s\\n' \"$@\" >> \"$CLAUDE_SWITCHER_OPEN_LOG\"\nexit 0\n"
             .write(to: shim, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shim.path)
 
@@ -88,59 +90,99 @@ final class LoginFlow {
         state.transcript = String(text.suffix(4000))
         // The `open` shim delivers the exact URL; the printed one is a fallback (terminal rendering can alter it),
         // used only when the shim has not reported within a moment.
-        if !openedURL, !outputURLScheduled, let url = TerminalText.firstURL(in: text, host: "claude.com") {
+        if !gotURL, !outputURLScheduled, let url = TerminalText.firstURL(in: text, host: "claude.com") {
             outputURLScheduled = true
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, !self.openedURL else { return }
+                guard let self, !self.gotURL else { return }
                 self.checkOpenLog()
-                if !self.openedURL { self.openURL(url, from: "output") }
+                if !self.gotURL { self.offer(url, from: "output") }
             }
         }
         if text.contains("Login successful") {
             if state.phase != .finishing { state.phase = .finishing }
-        } else if text.contains("Opening browser") && state.phase == .starting {
-            state.phase = .waitingBrowser
         }
         publish()
     }
 
     private func checkOpenLog() {
-        guard !openedURL, let data = try? Data(contentsOf: openLog), data.count > lastOpenLogSize else { return }
+        guard !gotURL, let data = try? Data(contentsOf: openLog), data.count > lastOpenLogSize else { return }
         lastOpenLogSize = data.count
         let text = String(decoding: data, as: UTF8.self)
         if let line = text.split(separator: "\n").first(where: { $0.hasPrefix("http") }), let url = URL(string: String(line)) {
-            openURL(url, from: "open")
+            offer(url, from: "open")
         }
     }
 
     /// `from == "open"`: the URL claude handed to the browser launcher - its redirect_uri is a localhost
-    /// callback, so the code comes back by itself. `from == "output"`: the printed fallback URL redirects to
+    /// callback that claude is listening on. `from == "output"`: the printed fallback URL redirects to
     /// platform.claude.com and shows a code the user must paste.
-    private func openURL(_ url: URL, from: String) {
-        openedURL = true
+    private func offer(_ url: URL, from: String) {
+        gotURL = true
         state.url = url
-        state.phase = from == "output" ? .needCode : .waitingBrowser
+        state.phase = from == "output" ? .needCode : .awaitingLink
         publish()
-        Task { [privateWindow] in
-            let where_ = await Browser.open(url, privateWindow: privateWindow)
-            state.openedIn = where_
-            publish()
-        }
     }
 
-    func reopen(privateWindow: Bool) {
-        guard let url = state.url else { return }
+    /// Accepts what the user pasted back: the localhost callback address (fetched here, so claude's own listener
+    /// gets the code), a platform callback URL (its code#state goes to the paste prompt), or a bare code.
+    func submit(_ input: String) {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !state.phase.isTerminal else { return }
+        if let pasted = URLComponents(string: text), pasted.scheme?.hasPrefix("http") == true {
+            let items = pasted.queryItems ?? []
+            guard let code = items.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
+                state.lastError = "link này không có code — copy link trên thanh địa chỉ SAU khi bấm Authorize"
+                publish(); return
+            }
+            if Self.loopback.contains(pasted.host ?? "") {
+                guard let expected = callback else {
+                    state.lastError = "phiên này dùng link dự phòng — dán code trang Claude hiện ra, không phải link localhost"
+                    publish(); return
+                }
+                guard pasted.port == expected.port, pasted.path == expected.path else {
+                    state.lastError = "link kết quả không khớp phiên đăng nhập này (cổng \(expected.port.map(String.init) ?? "?")) — có thể là của lần đăng nhập trước"
+                    publish(); return
+                }
+                deliver(callbackURL: text)
+                return
+            }
+            let st = items.first(where: { $0.name == "state" })?.value
+            writeCode(st.map { "\(code)#\($0)" } ?? code)
+            return
+        }
+        writeCode(text)
+    }
+
+    private static let loopback: Set<String> = ["localhost", "127.0.0.1"]
+
+    /// redirect_uri of the offered link when it is a local callback
+    private var callback: URLComponents? {
+        guard let url = state.url, let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let raw = comps.queryItems?.first(where: { $0.name == "redirect_uri" })?.value,
+              let cb = URLComponents(string: raw), Self.loopback.contains(cb.host ?? "") else { return nil }
+        return cb
+    }
+
+    private func deliver(callbackURL: String) {
+        state.lastError = nil
+        state.phase = .finishing
+        publish()
         Task {
-            state.openedIn = await Browser.open(url, privateWindow: privateWindow)
-            publish()
+            // curl, not URLSession: `localhost` may resolve to ::1 or 127.0.0.1 depending on where claude bound
+            let r = try? await Shell.run("/usr/bin/curl", ["-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "20", callbackURL], timeout: 30)
+            guard !state.phase.isTerminal else { return }
+            if r?.ok != true {
+                state.phase = .awaitingLink
+                state.lastError = "không gửi được link về claude: \(r?.trimmedErr ?? "curl lỗi") — claude có thể đã hết thời gian chờ, huỷ rồi đăng nhập lại"
+                publish()
+            }
         }
     }
 
-    func submitCode(_ code: String) {
-        let c = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !c.isEmpty else { return }
-        proc?.write(c + "\r")
+    private func writeCode(_ code: String) {
+        proc?.write(code + "\r")
+        state.lastError = nil
         state.phase = .finishing
         publish()
     }

@@ -428,7 +428,6 @@ struct SettingsView: View {
     @AppStorage(AppSettings.Key.restartSessions.rawValue) private var restartSessions = true
     @AppStorage(AppSettings.Key.cooldownMinutes.rawValue) private var cooldown = 10
     @AppStorage(AppSettings.Key.autoSaveLogin.rawValue) private var autoSaveLogin = true
-    @AppStorage(AppSettings.Key.loginPrivateWindow.rawValue) private var loginPrivateWindow = true
     @AppStorage(AppSettings.Key.loginViaTerminal.rawValue) private var loginViaTerminal = false
     @AppStorage(AppSettings.Key.prefer7d.rawValue) private var prefer7d = true
     @AppStorage(AppSettings.Key.sevenDayMargin.rawValue) private var sevenDayMargin = 10
@@ -473,7 +472,6 @@ struct SettingsView: View {
             Toggle("Thông báo macOS", isOn: $notify)
             Toggle("Chạy khi đăng nhập máy", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             Toggle("Tự lưu login mới xuất hiện (sau /login hay `claude auth login`)", isOn: $autoSaveLogin)
-            Toggle("Đăng nhập mở trang OAuth trong cửa sổ riêng tư", isOn: $loginPrivateWindow)
             Toggle("Đăng nhập qua Terminal thay vì trong app (khắc phục sự cố)", isOn: $loginViaTerminal)
             if loginViaTerminal {
                 Picker("Terminal cho đăng nhập", selection: $terminalApp) {
@@ -615,6 +613,7 @@ struct LoginPanel: View {
     @EnvironmentObject var model: AppModel
     let state: LoginState
     @State private var code = ""
+    @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -630,21 +629,28 @@ struct LoginPanel: View {
             }
             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             switch state.phase {
-            case .waitingBrowser, .needCode:
+            case .awaitingLink, .needCode:
+                if let url = state.url {
+                    HStack(spacing: 6) {
+                        Text(url.absoluteString).font(.caption2.monospaced()).lineLimit(2).truncationMode(.middle)
+                            .textSelection(.enabled)
+                        Button(copied ? "Đã copy" : "Copy link") {
+                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                            copied = true
+                        }
+                    }.controlSize(.small)
+                }
                 HStack(spacing: 6) {
-                    Button("Mở lại (riêng tư)") { model.loginReopen(privateWindow: true) }
-                    Button("Mở lại (thường)") { model.loginReopen(privateWindow: false) }
-                    if let url = state.url {
-                        Button("Copy link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string) }
-                    }
+                    TextField(state.phase == .needCode ? "Dán code trang Claude hiện ra" : "Dán link kết quả (http://localhost…)", text: $code)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { model.loginSubmit(code); code = "" }
+                    Button("Gửi") { model.loginSubmit(code); code = "" }.disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
                 }.controlSize(.small)
-                HStack(spacing: 6) {
-                    TextField("Trình duyệt hiện code? dán vào đây", text: $code).textFieldStyle(.roundedBorder)
-                        .onSubmit { model.loginSubmitCode(code); code = "" }
-                    Button("Gửi") { model.loginSubmitCode(code); code = "" }.disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
-                }.controlSize(.small)
+                if let err = state.lastError {
+                    Text(err).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
             case .failed(let why) where why.contains("already saved") || why.contains("not as '"):
-                Button("Thử lại trong cửa sổ riêng tư") {
+                Button("Thử lại") {
                     model.loginDismiss()
                     Task {
                         if state.relogin { await model.relogin(state.name) }
@@ -656,11 +662,12 @@ struct LoginPanel: View {
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)))
+        .onChange(of: state.url) { _, _ in copied = false }
     }
 
     private var icon: String {
         switch state.phase {
-        case .starting, .waitingBrowser, .needCode, .finishing: return "person.badge.key"
+        case .starting, .awaitingLink, .needCode, .finishing: return "person.badge.key"
         case .done: return "checkmark.circle.fill"
         case .failed: return "xmark.octagon.fill"
         }
@@ -674,13 +681,17 @@ struct LoginPanel: View {
         }
     }
 
+    private var who: String {
+        state.relogin ? "account '\(state.name)'\(state.email.map { " (\($0))" } ?? "")" : "account MỚI"
+    }
+
     private var message: String {
         switch state.phase {
         case .starting: return "Đang khởi động claude auth login…"
-        case .waitingBrowser:
-            let who = state.relogin ? "account '\(state.name)'\(state.email.map { " (\($0))" } ?? "")" : "account MỚI"
-            return "Trang đăng nhập Claude đã mở trong \(state.openedIn ?? "trình duyệt"). Đăng nhập bằng \(who) rồi bấm Authorize; app tự nhận kết quả. Trình duyệt đang giữ phiên claude.ai của account khác → đăng xuất hoặc dùng cửa sổ riêng tư."
-        case .needCode: return "Trang đăng nhập đã mở trong \(state.openedIn ?? "trình duyệt"). Sau khi Authorize, trang sẽ hiện một đoạn code — dán vào ô dưới."
+        case .awaitingLink:
+            return "Copy link, mở ở trình duyệt đang đăng nhập claude.ai bằng \(who), bấm Authorize. Trình duyệt chuyển tới http://localhost:…/callback?code=… (máy khác sẽ báo không kết nối được — bình thường): copy nguyên link trên thanh địa chỉ, dán vào ô dưới. Mở ngay trên máy này thì app tự nhận, không cần dán."
+        case .needCode:
+            return "Copy link, mở ở trình duyệt đang đăng nhập claude.ai bằng \(who), bấm Authorize. Trang sẽ hiện một đoạn code — dán vào ô dưới."
         case .finishing: return "Đã nhận đăng nhập, đang snapshot…"
         case .done(let msg): return msg
         case .failed(let why): return why

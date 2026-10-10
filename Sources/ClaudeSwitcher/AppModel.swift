@@ -733,8 +733,7 @@ final class AppModel: ObservableObject {
         }
         if let f = loginFlow, !f.state.phase.isTerminal { lastError = "Đang có một đăng nhập chạy ('\(f.name)') — huỷ nó trước"; return }
         do {
-            loginFlow = try await LoginFlow(name: name, email: email, relogin: relogin, switcher: switcher,
-                                            privateWindow: AppSettings.loginPrivateWindow) { [weak self] st in
+            loginFlow = try await LoginFlow(name: name, email: email, relogin: relogin, switcher: switcher) { [weak self] st in
                 guard let self else { return }
                 self.login = st
                 if case .done(let msg) = st.phase {
@@ -754,8 +753,7 @@ final class AppModel: ObservableObject {
         } catch { lastError = error.localizedDescription }
     }
 
-    func loginReopen(privateWindow: Bool) { loginFlow?.reopen(privateWindow: privateWindow) }
-    func loginSubmitCode(_ code: String) { loginFlow?.submitCode(code) }
+    func loginSubmit(_ input: String) { loginFlow?.submit(input) }
     func loginCancel() { loginFlow?.cancel() }
     func loginDismiss() { if login?.phase.isTerminal == true { login = nil; loginFlow = nil } }
 
