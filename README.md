@@ -135,6 +135,12 @@ Chính sách (`HopPolicy`, có checks): account live **hết** khi 5h ≥ ngư�
 100 = chỉ khi cạn hẳn) hoặc 7d ≥ ngưỡng 7d. Ứng viên = account khác chưa hết và snapshot dùng được.
 Không hop khi vừa đổi account < 30s, cooldown 10 phút sau lần tự hop trước, hoặc login hiện tại chưa được lưu.
 
+**Ngưỡng riêng / tắt từng account** (menu `…` của account, hoặc `claude-switcher limit`), lưu ở `.switcher/prefs.json`:
+- *Ngưỡng hop riêng*: rời account khi 5h ≥ N, coi là hết khi 7d ≥ N — vd để dành một account ở 5h 50% / 7d 80%.
+  Bỏ “riêng” = theo Cài đặt. Thanh 5h/7d của account đó đổi nhãn xanh và tô đỏ theo ngưỡng riêng.
+- *Tắt (giữ login)*: snapshot vẫn còn, nút Chuyển vẫn dùng được, nhưng auto-hop không bao giờ chọn nó; đang live thì
+  hop đi ngay khi có account khác (chọn tay thì giữ 1 giờ), session còn chạy trên nó được restart sang account live.
+
 **Chia đều quota tuần** (Cài đặt › Chung, bật mặc định). Hai mục tiêu: không account nào còn quota tuần lúc reset
 (phần đó mất trắng), và không account nào cạn 7d sớm (lúc đó chỉ còn cửa sổ 5h của account kia). Cả hai quy về
 **tiến độ tuần** của từng account, tính theo giờ reset của chính nó:
@@ -238,6 +244,7 @@ claude-switcher login <name> [--email x]   đăng nhập account khác (config d
 claude-switcher relogin <name>             đăng nhập lại account đã lưu có snapshot chết
 claude-switcher realign                    sửa lệch Keychain ↔ ~/.claude.json
 claude-switcher remove <name> | rename <old> <new>
+claude-switcher limit [<name> [5h=N|-] [7d=N|-] [off|on|reset]]   ngưỡng hop riêng / tắt account (không đối số = liệt kê)
 claude-switcher status [--no-api] | doctor | whoami   (whoami: account trong config vs. chủ thật của token live)
 claude-switcher install [--no-rc] | uninstall [--dry-run] [--keep-app]
 ```

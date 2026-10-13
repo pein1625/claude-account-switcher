@@ -77,10 +77,16 @@ public final class AccountStore {
     public func removeProfileFiles(_ name: String) {
         try? FileManager.default.removeItem(at: Paths.profileFile(name))
         try? FileManager.default.removeItem(at: Paths.quotaFile(name))
+        if readPrefs()[name] != nil { setPrefs(name, nil) }
     }
 
     public func moveQuota(_ old: String, to new: String) {
         try? FileManager.default.moveItem(at: Paths.quotaFile(old), to: Paths.quotaFile(new))
+    }
+
+    public func movePrefs(_ old: String, to new: String) {
+        var prefs = readPrefs()
+        if let p = prefs.removeValue(forKey: old) { prefs[new] = p; writePrefs(prefs) }
     }
 
     /// Replaces `.oauthAccount` in `~/.claude.json`, everything else untouched; atomic write, mode 600.
@@ -231,6 +237,23 @@ public final class AccountStore {
         Paths.ensureSwitcherDir()
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? enc.encode(cache) { writePrivate(Paths.usageCache, String(decoding: data, as: UTF8.self)) }
+    }
+
+    public func readPrefs() -> [String: AccountPrefs] {
+        guard let data = try? Data(contentsOf: Paths.prefsFile) else { return [:] }
+        return (try? JSONDecoder().decode([String: AccountPrefs].self, from: data)) ?? [:]
+    }
+
+    public func writePrefs(_ prefs: [String: AccountPrefs]) {
+        Paths.ensureSwitcherDir()
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? enc.encode(prefs.filter { !$0.value.isDefault }) { writePrivate(Paths.prefsFile, String(decoding: data, as: UTF8.self)) }
+    }
+
+    public func setPrefs(_ name: String, _ p: AccountPrefs?) {
+        var all = readPrefs()
+        all[name] = p
+        writePrefs(all)
     }
 
     public func readRestartPlan() -> RestartPlan? {

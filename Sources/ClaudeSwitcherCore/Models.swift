@@ -188,6 +188,21 @@ public struct RestartPlan: Codable, Equatable {
     }
 }
 
+/// Per-account overrides from `.switcher/prefs.json`. A nil limit follows the global setting; `disabled` keeps the
+/// snapshot (still logged in) but takes the account out of auto-hop: never a target, and left when it is live.
+public struct AccountPrefs: Codable, Equatable {
+    public var hopAt: Double?
+    public var sevenDayAt: Double?
+    public var disabled: Bool?
+
+    public init(hopAt: Double? = nil, sevenDayAt: Double? = nil, disabled: Bool? = nil) {
+        self.hopAt = hopAt; self.sevenDayAt = sevenDayAt; self.disabled = disabled
+    }
+
+    public var isOff: Bool { disabled ?? false }
+    public var isDefault: Bool { hopAt == nil && sevenDayAt == nil && !isOff }
+}
+
 public struct RateLimitEvent: Equatable {
     public var at: Date
     public var pid: Int32
@@ -195,7 +210,7 @@ public struct RateLimitEvent: Equatable {
 }
 
 public enum AppInfo {
-    public static let version = "0.6.0"
+    public static let version = "0.7.0"
     public static let bundleID = "com.hapk.claude-switcher"
     public static let name = "Claude Switcher"
 }

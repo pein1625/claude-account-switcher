@@ -5,7 +5,7 @@ import ClaudeSwitcherCore
 /// `claude-switcher <command>` - the same operations the menu bar app performs, from a terminal or a script.
 enum CLIMain {
     static let commands: Set<String> = [
-        "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "login", "relogin", "login-prepare", "login-finish",
+        "list", "ls", "names", "current", "next", "use", "save", "remove", "rm", "rename", "mv", "limit", "login", "relogin", "login-prepare", "login-finish",
         "realign",
         "status", "doctor", "hook", "install", "uninstall", "update", "version", "help", "whoami",
         "--version", "-v", "--help", "-h", "--status", "--doctor", "--uninstall",
@@ -36,6 +36,10 @@ enum CLIMain {
                                               file it under its owner and restore the configured account
       claude-switcher remove <name>           delete a saved snapshot (live login untouched)
       claude-switcher rename <old> <new>      rename a snapshot
+      claude-switcher limit [<name> [5h=N|5h=-] [7d=N|7d=-] [off|on|reset]]
+                                              per-account auto-hop limits: leave <name> at 5h ≥ N / treat it as
+                                              used up at 7d ≥ N ('-' = global setting); off keeps the login but
+                                              takes it out of auto-hop; no args lists every override
       claude-switcher names                   bare names, for shell completion
       claude-switcher next                    account a hop would go to now (usable snapshots only); exit 1 when none
       claude-switcher status [--no-api]       accounts, usage, decision, running sessions
@@ -50,6 +54,46 @@ enum CLIMain {
       CLAUDE_ACCOUNT_LIVE_SERVICE   macOS Keychain service Claude Code writes to (default "Claude Code-credentials")
       CLAUDE_SWITCHER_NO_VERIFY=1   never ask Anthropic whose a token is (save/use then trust ~/.claude.json)
     """
+
+    static func limit(_ args: [String], store: AccountStore, switcher: Switcher) -> Int32 {
+        func describe(_ name: String, _ p: AccountPrefs?) -> String {
+            let five = p?.hopAt.map { "\(Int($0))%" } ?? "\(Int(AppSettings.hopAt))% (global)"
+            let seven = p?.sevenDayAt.map { "\(Int($0))%" } ?? "\(Int(AppSettings.sevenDayAt))% (global)"
+            return "\(name)\t5h \(five)\t7d \(seven)\t\(p?.isOff == true ? "off" : "on")"
+        }
+        let names = switcher.profiles().map(\.name)
+        guard let name = args.first else {
+            let prefs = store.readPrefs()
+            names.forEach { print(describe($0, prefs[$0])) }
+            return 0
+        }
+        guard names.contains(name) else {
+            FileHandle.standardError.write(Data("claude-switcher: no saved account '\(name)'\n".utf8)); return 1
+        }
+        var p = store.readPrefs()[name] ?? AccountPrefs()
+        for arg in args.dropFirst() {
+            let kv = arg.split(separator: "=", maxSplits: 1).map(String.init)
+            func pct() -> Double?? {
+                guard kv.count == 2 else { return nil }
+                if kv[1] == "-" { return .some(nil) }
+                guard let v = Double(kv[1].trimmingCharacters(in: CharacterSet(charactersIn: "%"))), (1...100).contains(v) else { return nil }
+                return .some(v)
+            }
+            switch (kv[0], arg) {
+            case (_, "off"): p.disabled = true
+            case (_, "on"): p.disabled = nil
+            case (_, "reset"): p = AccountPrefs()
+            case ("5h", _): guard let v = pct() else { fallthrough }; p.hopAt = v
+            case ("7d", _): guard let v = pct() else { fallthrough }; p.sevenDayAt = v
+            default:
+                FileHandle.standardError.write(Data("claude-switcher: bad argument '\(arg)' (5h=1..100, 7d=1..100, '-' = global, off, on, reset)\n".utf8))
+                return 1
+            }
+        }
+        if args.count > 1 { store.setPrefs(name, p.isDefault ? nil : p) }
+        print(describe(name, store.readPrefs()[name]))
+        return 0
+    }
 
     static func run(_ args: [String]) async -> Int32 {
         AppSettings.register()
@@ -76,10 +120,11 @@ enum CLIMain {
             case "next":
                 let now = Date()
                 let cache = store.readUsageCache()
+                let prefs = store.readPrefs()
                 var states: [AccountState] = []
                 for p in switcher.profiles() {
                     let problem = p.name == switcher.currentName() ? nil : await Keychain.inspect(service: Keychain.savedService(p.name)).problem
-                    states.append(AccountState(name: p.name, usage: cache[p.name], record: store.quotaRecord(p.name), blocked: problem?.text))
+                    states.append(AccountState(name: p.name, usage: cache[p.name], record: store.quotaRecord(p.name), blocked: problem?.text, prefs: prefs[p.name]))
                 }
                 guard let best = HopPolicy.ranked(states, excluding: switcher.currentName(), t: AppSettings.thresholds, now: now, maxAge: 300).first else {
                     return fail("no other account below \(Int(AppSettings.hopAt))% 5h usage")
@@ -96,6 +141,8 @@ enum CLIMain {
             case "rename", "mv":
                 guard rest.count == 2 else { return fail("usage: rename <old> <new>") }
                 out(try await switcher.rename(rest[0], to: rest[1]))
+            case "limit":
+                return limit(rest, store: store, switcher: switcher)
             case "login":
                 return try await login(rest, switcher: switcher, relogin: false)
             case "relogin":
@@ -211,7 +258,8 @@ enum CLIMain {
                 usage[p.name] = u
             }
         }
-        let states = profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: store.quotaRecord($0.name)) }
+        let prefs = store.readPrefs()
+        let states = profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: store.quotaRecord($0.name), prefs: prefs[$0.name]) }
         print("Claude Switcher \(AppInfo.version)  store: \(Paths.accountsDir.path)")
         print("live: \(liveName ?? "(unsaved)") \(live?.emailAddress ?? "-")")
         print("")

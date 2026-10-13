@@ -28,10 +28,12 @@ public struct AccountState: Equatable {
     public var forcedExhaustedUntil: Date?
     /// Why this account cannot be switched to right now (dead snapshot, a hop to it just failed); never a target.
     public var blocked: String?
+    public var prefs: AccountPrefs
 
-    public init(name: String, usage: AccountUsage? = nil, record: QuotaRecord? = nil, forcedExhaustedUntil: Date? = nil, blocked: String? = nil) {
+    public init(name: String, usage: AccountUsage? = nil, record: QuotaRecord? = nil, forcedExhaustedUntil: Date? = nil, blocked: String? = nil,
+                prefs: AccountPrefs? = nil) {
         self.name = name; self.usage = usage; self.record = record; self.forcedExhaustedUntil = forcedExhaustedUntil
-        self.blocked = blocked
+        self.blocked = blocked; self.prefs = prefs ?? AccountPrefs()
     }
 }
 
@@ -42,6 +44,10 @@ public struct Effective: Equatable {
     public var sevenDay: Double?
     public var sevenResetsAt: Date?
     public var source: UsageSource
+    /// The account's own limits (`AccountPrefs`); nil = the global threshold.
+    public var hopAt: Double? = nil
+    public var sevenDayAt: Double? = nil
+    public var disabled = false
 }
 
 public enum Decision: Equatable {
@@ -59,6 +65,12 @@ public enum HopPolicy {
     /// stale: a week's usage only grows until its reset, so an old reading is a lower bound, and a non-live
     /// account's token expires after a few hours while its 7d still decides where to go.
     public static func effective(_ s: AccountState, now: Date, maxAge: TimeInterval) -> Effective {
+        var e = measured(s, now: now, maxAge: maxAge)
+        e.hopAt = s.prefs.hopAt; e.sevenDayAt = s.prefs.sevenDayAt; e.disabled = s.prefs.isOff
+        return e
+    }
+
+    static func measured(_ s: AccountState, now: Date, maxAge: TimeInterval) -> Effective {
         let seven = s.usage?.sevenDay.map { w in (w.resetsAt.map { now >= $0 } ?? false) ? 0 : w.pct }
         let sevenAt = s.usage?.sevenDay?.resetsAt
         if let until = s.forcedExhaustedUntil, until > now {
@@ -76,7 +88,12 @@ public enum HopPolicy {
     }
 
     /// Enough 5h room to be worth moving to for the 7d balance: the margin below the hop threshold.
-    static func hasRoom(_ e: Effective, _ t: Thresholds) -> Bool { e.fiveHour + t.sevenDayMargin < t.hopAt }
+    static func hasRoom(_ e: Effective, _ t: Thresholds) -> Bool { e.fiveHour + t.sevenDayMargin < hopAt(e, t) }
+
+    /// The 5h level this account is left at: its own limit, else the global one.
+    public static func hopAt(_ e: Effective, _ t: Thresholds) -> Double { e.hopAt ?? t.hopAt }
+    /// The 7d level this account counts as used up at.
+    public static func sevenDayAt(_ e: Effective, _ t: Thresholds) -> Double { e.sevenDayAt ?? t.sevenDayAt }
 
     public static let week: TimeInterval = 7 * 86400
 
@@ -91,14 +108,14 @@ public enum HopPolicy {
     }
 
     public static func isExhausted(_ e: Effective, _ t: Thresholds) -> Bool {
-        e.fiveHour >= t.hopAt || (e.sevenDay ?? 0) >= t.sevenDayAt
+        e.fiveHour >= hopAt(e, t) || (e.sevenDay ?? 0) >= sevenDayAt(e, t)
     }
 
     /// Weekly quota the reset throws away within `nearResetHours` unless it is used: points left, hours to reset.
     public static func expiring(_ e: Effective, _ t: Thresholds, now: Date) -> (left: Double, hours: Double)? {
         guard t.prefer7d, t.nearResetHours > 0, let used = e.sevenDay, let reset = e.sevenResetsAt, reset > now else { return nil }
         let hours = reset.timeIntervalSince(now) / 3600
-        let left = t.sevenDayAt - used
+        let left = sevenDayAt(e, t) - used
         guard hours <= t.nearResetHours, left > 0 else { return nil }
         return (left, hours)
     }
@@ -114,7 +131,7 @@ public enum HopPolicy {
     /// (earliest reset first), then furthest behind their weekly pace, then lowest 5h. Otherwise lowest 5h, then
     /// lowest 7d. Name breaks ties.
     public static func ranked(_ states: [AccountState], excluding live: String?, t: Thresholds, now: Date, maxAge: TimeInterval) -> [Effective] {
-        states.filter { $0.name != live && $0.blocked == nil }
+        states.filter { $0.name != live && $0.blocked == nil && !$0.prefs.isOff }
             .map { effective($0, now: now, maxAge: maxAge) }
             .filter { !isExhausted($0, t) }
             .sorted { a, b in
@@ -156,8 +173,16 @@ public enum HopPolicy {
         }
         let liveEff = effective(liveState, now: now, maxAge: maxAge)
         let candidates = ranked(states, excluding: live, t: t, now: now, maxAge: maxAge)
+        // turned off in the app: leave it like an exhausted account, but a manual pick still holds for a while;
+        // with nowhere to go it is judged like any other live account
+        if liveEff.disabled, let best = candidates.first {
+            if let m = lastManualSwitchAt, now.timeIntervalSince(m) < manualHold {
+                return .hold("\(live) đang tắt; giữ account chọn tay thêm \(Int((manualHold - now.timeIntervalSince(m)) / 60) + 1) phút")
+            }
+            return waiting() ?? .hop(to: best.name, reason: "\(live) đang tắt")
+        }
         guard isExhausted(liveEff, t) else {
-            let stay = Decision.stay(String(format: "%@ 5h %.0f%% < %.0f%%", live, liveEff.fiveHour, t.hopAt))
+            let stay = Decision.stay(String(format: "%@ 5h %.0f%% < %.0f%%", live, liveEff.fiveHour, hopAt(liveEff, t)))
             guard t.prefer7d else { return stay }
             // use it or lose it: quota the reset is about to throw away beats the weekly pace
             let liveX = expiring(liveEff, t, now: now)
@@ -187,7 +212,7 @@ public enum HopPolicy {
             return waiting() ?? .hop(to: best.name, reason: "cân bằng \(why)")
         }
         guard let best = candidates.first else {
-            let resets = states.filter { $0.name != live && $0.blocked == nil }
+            let resets = states.filter { $0.name != live && $0.blocked == nil && !$0.prefs.isOff }
                 .map { effective($0, now: now, maxAge: maxAge) }
                 .compactMap { $0.fiveResetsAt }
                 .filter { $0 > now }
@@ -196,10 +221,10 @@ public enum HopPolicy {
         }
         if let w = waiting() { return w }
         let why: String
-        if liveEff.fiveHour >= t.hopAt {
-            why = String(format: "%@ 5h %.0f%% ≥ %.0f%%", live, liveEff.fiveHour, t.hopAt)
+        if liveEff.fiveHour >= hopAt(liveEff, t) {
+            why = String(format: "%@ 5h %.0f%% ≥ %.0f%%", live, liveEff.fiveHour, hopAt(liveEff, t))
         } else {
-            why = String(format: "%@ 7d %.0f%% ≥ %.0f%%", live, liveEff.sevenDay ?? 0, t.sevenDayAt)
+            why = String(format: "%@ 7d %.0f%% ≥ %.0f%%", live, liveEff.sevenDay ?? 0, sevenDayAt(liveEff, t))
         }
         return .hop(to: best.name, reason: why)
     }

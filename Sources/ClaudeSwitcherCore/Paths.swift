@@ -25,6 +25,7 @@ public enum Paths {
     public static var restartPlan: URL { switcherDir.appendingPathComponent("restart.json") }
     public static var eventsLog: URL { switcherDir.appendingPathComponent("events.log") }
     public static var restartsLog: URL { switcherDir.appendingPathComponent("restarts.log") }
+    public static var prefsFile: URL { switcherDir.appendingPathComponent("prefs.json") }
     public static var appLog: URL { switcherDir.appendingPathComponent("app.log") }
     /// Output of the installer the update button starts; the app is killed mid-run, so this is the only record.
     public static var updateLog: URL { switcherDir.appendingPathComponent("update.log") }

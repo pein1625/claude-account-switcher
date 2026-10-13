@@ -213,6 +213,20 @@ do {
 
 // MARK: shell installer, launcher, plan, hooks
 do {
+    // per-account prefs: own limits, off switch
+    let own = [AccountState(name: "m04", usage: api(60), prefs: AccountPrefs(hopAt: 50)), AccountState(name: "m19", usage: api(10))]
+    equal(HopPolicy.decide(live: "m04", states: own, t: t, now: now), .hop(to: "m19", reason: "m04 5h 60% ≥ 50%"), "own 5h limit leaves the account early")
+    let ownTarget = [AccountState(name: "m04", usage: api(95)), AccountState(name: "m19", usage: api(60, 85), prefs: AccountPrefs(sevenDayAt: 80)), AccountState(name: "m07", usage: api(70))]
+    equal(HopPolicy.decide(live: "m04", states: ownTarget, t: t, now: now), .hop(to: "m07", reason: "m04 5h 95% ≥ 90%"), "own 7d limit keeps a reserved account out")
+    let off = [AccountState(name: "m04", usage: api(95)), AccountState(name: "m19", usage: api(1), prefs: AccountPrefs(disabled: true)), AccountState(name: "m07", usage: api(50))]
+    equal(HopPolicy.decide(live: "m04", states: off, t: t, now: now), .hop(to: "m07", reason: "m04 5h 95% ≥ 90%"), "an account turned off is never a target")
+    let liveOff = [AccountState(name: "m04", usage: api(10), prefs: AccountPrefs(disabled: true)), AccountState(name: "m19", usage: api(40))]
+    equal(HopPolicy.decide(live: "m04", states: liveOff, t: t, now: now), .hop(to: "m19", reason: "m04 đang tắt"), "live account turned off is left")
+    if case .hold = HopPolicy.decide(live: "m04", states: liveOff, t: t, now: now, lastManualSwitchAt: now.addingTimeInterval(-60)) {} else { check(false, "manual pick of an off account holds") }
+    equal(HopPolicy.decide(live: "m04", states: Array(liveOff.prefix(1)) + [AccountState(name: "m19", usage: api(1), prefs: AccountPrefs(disabled: true))], t: t, now: now),
+          .stay("m04 5h 10% < 90%"), "everything off -> stays where it is")
+    check(AccountPrefs(hopAt: nil, sevenDayAt: nil, disabled: nil).isDefault && !AccountPrefs(disabled: true).isDefault, "default prefs")
+
     let block = ShellInstaller.rcBlock()
     check(block.hasPrefix(ShellInstaller.markBegin + "\n") && block.hasSuffix(ShellInstaller.markEnd), "rc block delimited by the plugin's markers")
     check(block.contains("CLAUDE_AS_ID=\"$id\"") && block.contains("hop-$id") && block.contains("alias claude='claude-as'"), "rc block content")

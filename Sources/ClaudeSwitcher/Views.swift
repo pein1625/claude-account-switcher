@@ -17,7 +17,7 @@ struct MenuBarLabel: View {
     private func symbol(_ e: Effective?) -> String {
         guard let e else { return "person.crop.circle.badge.questionmark" }
         if model.drift != nil { return "exclamationmark.triangle" }
-        if e.fiveHour >= AppSettings.hopAt { return "person.crop.circle.badge.exclamationmark" }
+        if e.fiveHour >= HopPolicy.hopAt(e, AppSettings.thresholds) { return "person.crop.circle.badge.exclamationmark" }
         if e.fiveHour >= 70 { return "person.crop.circle.badge.clock" }
         return "person.crop.circle.badge.checkmark"
     }
@@ -272,6 +272,7 @@ struct AccountRow: View {
     let profile: AccountProfile
     @State private var confirmingRemove = false
     @State private var renaming = false
+    @State private var editingLimits = false
     @State private var newName = ""
     @FocusState private var nameFocused: Bool
 
@@ -282,11 +283,16 @@ struct AccountRow: View {
         let u = model.usage[profile.name]
         let issue = model.credentialIssues[profile.name]
         let sessions = model.sessions.filter { $0.account.name == profile.name }.count
+        let prefs = model.prefs[profile.name] ?? AccountPrefs()
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle().fill(isLive ? Color.green : Color.secondary.opacity(0.4)).frame(width: 8, height: 8)
                 Text(profile.name).font(.system(.body, design: .rounded).weight(.semibold))
                 if isLive { Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(.green) }
+                if prefs.isOff {
+                    Text("TẮT").font(.caption2.weight(.bold)).foregroundStyle(.orange)
+                        .help("Vẫn giữ login, nhưng auto-hop không bao giờ chọn account này và sẽ rời nó nếu đang live.")
+                }
                 Text("\(profile.email) · \(profile.plan) · \(profile.org)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 if issue != nil {
@@ -298,6 +304,12 @@ struct AccountRow: View {
                 }
                 Menu {
                     Button("Đăng nhập lại…") { Task { await model.relogin(profile.name) } }
+                    Button(prefs.isOff ? "Bật lại cho auto-hop" : "Tắt (giữ login, auto-hop bỏ qua)") {
+                        var p = prefs; p.disabled = prefs.isOff ? nil : true
+                        model.setPrefs(profile.name, p)
+                    }
+                    Button("Ngưỡng hop riêng…") { editingLimits = true; renaming = false; confirmingRemove = false }
+                    Divider()
                     Button("Đổi tên…") { newName = profile.name; renaming = true; confirmingRemove = false; nameFocused = true }
                     Button("Xoá snapshot…", role: .destructive) { confirmingRemove = true; renaming = false }
                 } label: { Image(systemName: "ellipsis.circle") }
@@ -315,6 +327,9 @@ struct AccountRow: View {
                         Button("Huỷ") { confirmingRemove = false }
                     }.controlSize(.small)
                 }
+            }
+            if editingLimits {
+                LimitsEditor(name: profile.name, prefs: prefs) { editingLimits = false }
             }
             if renaming {
                 HStack(spacing: 6) {
@@ -336,8 +351,8 @@ struct AccountRow: View {
                      : "Không chuyển sang được: \(issue.text). Hop tự động bỏ qua account này tới khi Đăng nhập lại.")
                     .font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
-            bar("5h", Reading.fiveHour(eff: eff, usage: u), threshold: AppSettings.hopAt)
-            bar("7d", Reading.sevenDay(eff: eff, usage: u), threshold: AppSettings.sevenDayAt)
+            bar("5h", Reading.fiveHour(eff: eff, usage: u), threshold: prefs.hopAt ?? AppSettings.hopAt, custom: prefs.hopAt != nil)
+            bar("7d", Reading.sevenDay(eff: eff, usage: u), threshold: prefs.sevenDayAt ?? AppSettings.sevenDayAt, custom: prefs.sevenDayAt != nil)
             HStack(spacing: 8) {
                 Text(sourceText(eff, u)).font(.caption2).foregroundStyle(.secondary)
                 if let pace = paceText(eff) {
@@ -352,15 +367,18 @@ struct AccountRow: View {
             }
         }
         .padding(8)
+        .opacity(prefs.isOff ? 0.6 : 1)
         .background(RoundedRectangle(cornerRadius: 8).fill(isLive ? Color.green.opacity(0.08) : Color.secondary.opacity(0.06)))
     }
 
     /// Both windows always keep their row. A window the current reading does not carry - a non-live account whose
     /// token expired, a payload without `seven_day` - falls back to the last value measured for it, dimmed; only
     /// an account never measured at all shows an empty bar.
-    private func bar(_ label: String, _ r: Reading, threshold: Double) -> some View {
+    private func bar(_ label: String, _ r: Reading, threshold: Double, custom: Bool) -> some View {
         HStack(spacing: 6) {
             Text(label).font(.caption2.monospaced()).frame(width: 18, alignment: .leading)
+                .foregroundStyle(custom ? AnyShapeStyle(.blue) : AnyShapeStyle(.primary))
+                .help(custom ? "Ngưỡng riêng của account này: \(Int(threshold))%" : "")
             ProgressView(value: min(max(r.pct ?? 0, 0), 100), total: 100)
                 .tint(r.pct == nil ? .gray : r.pct! >= threshold ? .red : r.pct! >= 70 ? .orange : .green)
                 .opacity(r.pct == nil ? 0.35 : r.stale ? 0.55 : 1)
@@ -696,5 +714,51 @@ struct LoginPanel: View {
         case .done(let msg): return msg
         case .failed(let why): return why
         }
+    }
+}
+
+/// Inline editor for one account's own hop limits; "chung" follows the global setting.
+struct LimitsEditor: View {
+    @EnvironmentObject var model: AppModel
+    let name: String
+    let done: () -> Void
+    @State private var five: Double?
+    @State private var seven: Double?
+
+    init(name: String, prefs: AccountPrefs, done: @escaping () -> Void) {
+        self.name = name; self.done = done
+        _five = State(initialValue: prefs.hopAt)
+        _seven = State(initialValue: prefs.sevenDayAt)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            row("Rời account khi 5h ≥", $five, global: AppSettings.hopAt)
+            row("Coi là hết khi 7d ≥", $seven, global: AppSettings.sevenDayAt)
+            HStack {
+                Button("Lưu") {
+                    var p = model.prefs[name] ?? AccountPrefs()
+                    p.hopAt = five; p.sevenDayAt = seven
+                    model.setPrefs(name, p); done()
+                }
+                Button("Huỷ", action: done)
+            }.controlSize(.small)
+            Text("Vd để dành account: 5h 50%, 7d 80%. Bỏ “riêng” = theo Cài đặt.").font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func row(_ label: String, _ value: Binding<Double?>, global: Double) -> some View {
+        HStack(spacing: 6) {
+            Toggle("riêng", isOn: Binding(get: { value.wrappedValue != nil },
+                                          set: { value.wrappedValue = $0 ? (value.wrappedValue ?? global) : nil }))
+                .toggleStyle(.checkbox)
+            Text(label).font(.caption)
+            if let v = value.wrappedValue {
+                Stepper("\(Int(v))%", value: Binding(get: { v }, set: { value.wrappedValue = $0 }), in: 5...100, step: 5)
+                    .font(.caption.monospacedDigit())
+            } else {
+                Text("\(Int(global))% (chung)").font(.caption).foregroundStyle(.secondary)
+            }
+        }.controlSize(.small)
     }
 }

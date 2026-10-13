@@ -336,6 +336,7 @@ public struct Switcher {
             await Keychain.delete(service: Keychain.savedService(old))
             try? FileManager.default.removeItem(at: Paths.profileFile(old))
             store.moveQuota(old, to: new)
+            store.movePrefs(old, to: new)
             if let m = store.currentMarker(), m.name == old { store.setCurrentMarker(name: new, uuid: m.uuid) }
             return "Renamed '\(old)' -> '\(new)' (the live login is untouched)"
         }
@@ -460,13 +461,15 @@ public struct Switcher {
         let profiles = store.loadProfiles()
         guard !profiles.isEmpty else { return "(none saved yet - run: claude-switcher save <name>)\n" }
         let live = currentName()
+        let prefs = store.readPrefs()
         var out = String(format: "%-1@ %-14@ %-32@ %-22@ %-8@ %-6@ %@\n", "", "NAME", "EMAIL", "ORG", "PLAN", "5H", "SAVED")
         for p in profiles {
-            let state = AccountState(name: p.name, usage: usage[p.name], record: store.quotaRecord(p.name))
+            let state = AccountState(name: p.name, usage: usage[p.name], record: store.quotaRecord(p.name), prefs: prefs[p.name])
             let e = HopPolicy.effective(state, now: now, maxAge: 300)
             let q = e.source == .none ? "-" : "\(Int(e.fiveHour.rounded()))%"
             let saved = (p.saved_at ?? "-").split(separator: "T").first.map(String.init) ?? "-"
-            out += String(format: "%-1@ %-14@ %-32@ %-22@ %-8@ %-6@ %@\n", p.name == live ? "*" : " ", p.name, p.email, p.org, p.plan, q, saved)
+            let off = state.prefs.isOff ? "  (off)" : ""
+            out += String(format: "%-1@ %-14@ %-32@ %-22@ %-8@ %-6@ %@\n", p.name == live ? "*" : " ", p.name, p.email, p.org, p.plan, q, saved + off)
         }
         return out
     }

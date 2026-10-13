@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var liveName: String?
     @Published var usage: [String: AccountUsage] = [:]
     @Published var records: [String: QuotaRecord] = [:]
+    @Published var prefs: [String: AccountPrefs] = [:]
     @Published var sessions: [Session] = []
     @Published var plan: RestartPlan?
     @Published var decision: Decision = .hold("chưa có dữ liệu")
@@ -210,6 +211,16 @@ final class AppModel: ObservableObject {
         var recs: [String: QuotaRecord] = [:]
         for p in profiles { if let r = store.quotaRecord(p.name) { recs[p.name] = r } }
         records = recs
+        prefs = store.readPrefs()
+    }
+
+    /// Per-account hop limits / off switch; nil clears them back to the global settings.
+    func setPrefs(_ name: String, _ p: AccountPrefs?) {
+        let p = p?.isDefault == true ? nil : p
+        store.setPrefs(name, p)
+        prefs = store.readPrefs()
+        store.log("prefs \(name): \(p.map { "5h \($0.hopAt.map { "\(Int($0))" } ?? "-") 7d \($0.sevenDayAt.map { "\(Int($0))" } ?? "-") off \($0.isOff)" } ?? "default")")
+        evaluate()
     }
 
     private func tick() async {
@@ -285,7 +296,7 @@ final class AppModel: ObservableObject {
         let orphans = sessions.filter { s in
             guard let acct = s.account.name, acct != live, s.isLoop, !planned.contains(String(s.pid)) else { return false }
             guard let eff = effective(acct, now: now) else { return false }
-            return HopPolicy.isExhausted(eff, AppSettings.thresholds)
+            return eff.disabled || HopPolicy.isExhausted(eff, AppSettings.thresholds)
         }
         guard !orphans.isEmpty else { return }
         planRestarts(for: orphans, to: live)
@@ -443,7 +454,8 @@ final class AppModel: ObservableObject {
                 store.writeQuotaRecord(p.name, QuotaRecord(pct: Int(five.pct.rounded(.down)), resetsAt: five.resetsAt, recordedAt: now), now: now)
                 // A rate-limit event is a strong hint, but a fresher API reading well under both thresholds
                 // overrules it (the event may have come from a misattributed session).
-                if let at = forcedAt[p.name], now > at, five.pct < AppSettings.hopAt, (u.sevenDay?.pct ?? 0) < AppSettings.sevenDayAt {
+                if let at = forcedAt[p.name], now > at, five.pct < (prefs[p.name]?.hopAt ?? AppSettings.hopAt),
+                   (u.sevenDay?.pct ?? 0) < (prefs[p.name]?.sevenDayAt ?? AppSettings.sevenDayAt) {
                     forcedExhausted.removeValue(forKey: p.name)
                     forcedAt.removeValue(forKey: p.name)
                     store.log("rate_limit flag for \(p.name) cleared: API shows 5h \(Int(five.pct))%")
@@ -525,7 +537,8 @@ final class AppModel: ObservableObject {
 
     func states(now: Date = Date()) -> [AccountState] {
         profiles.map { AccountState(name: $0.name, usage: usage[$0.name], record: records[$0.name],
-                                    forcedExhaustedUntil: forcedExhausted[$0.name], blocked: blockReason($0.name, now: now)) }
+                                    forcedExhaustedUntil: forcedExhausted[$0.name], blocked: blockReason($0.name, now: now),
+                                    prefs: prefs[$0.name]) }
     }
 
     /// Why a hop must not go to this account now. A failed switch keeps it out for the cooldown, so a target
