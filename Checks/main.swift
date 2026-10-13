@@ -364,6 +364,8 @@ do {
     let block = ShellInstaller.rcBlock()
     check(block.contains(#"if "$cs" use "$next"; then"#) && block.contains("resuming on the current login") && !block.contains(#""$cs" use "$next" || return"#),
           "claude-as resumes on the current login when the switch fails")
+    check(block.contains(#"[ -s "$sw/hop-$id.prompt" ] && msg=$(cat "$sw/hop-$id.prompt")"#) && block.contains(#"[ -n "$msg" ] && set -- "$@" "$msg""#),
+          "claude-as sends the hook's prompt as the resumed session's first message")
     check(LoginLauncher.loginScript(cli: "/x/cs", name: "m19", email: nil, relogin: true).contains(#"login-prepare --relogin "$name""#), "relogin script")
     check(!LoginLauncher.loginScript(cli: "/x/cs", name: "m19", email: nil).contains("--relogin"), "plain login script")
     check(CredentialProblem.missing.detail.hasPrefix("are ") && CredentialProblem.rejected(401).detail.contains("401"), "error detail wording")
@@ -385,6 +387,12 @@ do {
     check(!FileManager.default.fileExists(atPath: Paths.hopSessionMarker("3-4").path), "orphan session file (old loop took the marker) pruned")
     store.writeHopMarker(id: "5-6", "m04")
     check(!FileManager.default.fileExists(atPath: Paths.hopSessionMarker("5-6").path), "no session id -> no session file")
+    check(!FileManager.default.fileExists(atPath: Paths.hopPromptMarker("5-6").path), "no prompt -> no prompt file")
+    store.writeHopMarker(id: "7-8", "m19", sessionID: "sess-c", prompt: "go on")
+    equal(try? String(contentsOf: Paths.hopPromptMarker("7-8"), encoding: .utf8), "go on\n")
+    try? FileManager.default.removeItem(at: Paths.hopMarker("7-8"))
+    store.pruneSessionMarkers(now: Date().addingTimeInterval(600))
+    check(!FileManager.default.fileExists(atPath: Paths.hopPromptMarker("7-8").path), "orphan prompt file pruned")
 }
 
 func oldRecForBlock() -> QuotaRecord { QuotaRecord(pct: 0, resetsAt: now.addingTimeInterval(-60), recordedAt: now.addingTimeInterval(-9000)) }

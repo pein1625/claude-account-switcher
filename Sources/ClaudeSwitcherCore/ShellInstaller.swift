@@ -63,7 +63,7 @@ public enum ShellInstaller {
         #   Starts claude, optionally after switching to <account>. When Claude Switcher moves this session to
         #   another account, its Stop hook ends the process at the end of a turn; this loop then switches the
         #   login and resumes the same conversation (`claude --resume <its id>`, else `--continue`) with the launch
-        #   options it was started with.
+        #   options it was started with. A turn the usage limit cut off resumes with a message telling it to go on.
         # Launch options to carry onto `claude --resume`: everything except what picks the conversation (-c, -r,
         # --session-id, --fork-session, --from-pr, --teleport) and the opening prompt, which was already sent.
         # Values are consumed the way claude parses them: <x> takes one, [x] one unless it starts with -, <x...> until the next flag.
@@ -97,7 +97,7 @@ public enum ShellInstaller {
           done
         }
         claude-as() {
-          local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" cs="$HOME/.local/bin/claude-switcher" sw id next sid rc keep
+          local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" cs="$HOME/.local/bin/claude-switcher" sw id next sid msg rc keep
           sw="$dir/.switcher"
           if [ -n "${1:-}" ] && [ -f "$dir/$1.json" ]; then
             "$cs" use "$1" || return $?
@@ -111,11 +111,12 @@ public enum ShellInstaller {
             id="$$-$RANDOM$RANDOM"
             CLAUDE_AS_LOOP=1 CLAUDE_AS_ID="$id" command claude "$@"
             rc=$?
-            sid=""
+            sid="" msg=""
             if [ -s "$sw/hop-$id" ]; then
               next=$(cat "$sw/hop-$id"); rm -f "$sw/hop-$id"
               [ -s "$sw/hop-$id.session" ] && sid=$(cat "$sw/hop-$id.session")
-              rm -f "$sw/hop-$id.session"
+              [ -s "$sw/hop-$id.prompt" ] && msg=$(cat "$sw/hop-$id.prompt")
+              rm -f "$sw/hop-$id.session" "$sw/hop-$id.prompt"
             elif [ -s "$dir/.hop" ]; then
               next=$(cat "$dir/.hop"); rm -f "$dir/.hop"
             else
@@ -130,6 +131,8 @@ public enum ShellInstaller {
             # --continue would pick the newest conversation in this directory - another session's, when
             # several run here; the hook hands over this one's id
             if [ -n "$sid" ]; then set -- "${keep[@]}" --resume "$sid"; else set -- "${keep[@]}" --continue; fi
+            # a turn cut off by the usage limit gets a first message, so the work goes on instead of idling
+            [ -n "$msg" ] && set -- "$@" "$msg"
           done
         }
         # an alias another startup file already set for `claude` is kept, not overridden

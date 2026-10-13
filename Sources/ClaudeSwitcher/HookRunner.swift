@@ -42,7 +42,8 @@ enum HookRunner {
         }
 
         if let id = env["CLAUDE_AS_ID"], !id.isEmpty {
-            store.writeHopMarker(id: id, target, sessionID: json["session_id"] as? String)
+            store.writeHopMarker(id: id, target, sessionID: json["session_id"] as? String,
+                                 prompt: event == "StopFailure" ? resumePrompt : nil)
         } else {
             store.writeHop(target)
         }
@@ -51,6 +52,11 @@ enum HookRunner {
         kill(pid, SIGTERM)
         return 0
     }
+
+    /// A rate-limited turn stopped mid-work; without a first message the resumed session sits idle at the prompt.
+    static let resumePrompt = "[claude-switcher] This session hit the usage limit and was restarted on another account. "
+        + "Continue the task from where it stopped. Background shells, subagents and monitors that were running "
+        + "before the restart were killed and their results are lost - start again any that are still needed."
 
     /// CLAUDE_PID when it is one of our ancestors; otherwise the nearest ancestor whose executable is `claude`.
     static func resolveClaudePid(env: [String: String]) -> Int32? {

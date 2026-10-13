@@ -35,6 +35,7 @@ public enum Paths {
     /// Session id next to the marker, so the loop resumes exactly that conversation (`--resume <id>`) instead of
     /// the newest one in the directory. A separate file: loops written before 0.5 read the marker as a bare name.
     public static func hopSessionMarker(_ id: String) -> URL { switcherDir.appendingPathComponent("hop-\(id).session") }
+    public static func hopPromptMarker(_ id: String) -> URL { switcherDir.appendingPathComponent("hop-\(id).prompt") }
 
     public static var localBin: URL { home.appendingPathComponent(".local/bin") }
     /// `claude-switcher` on PATH: a two-line shim that execs the app binary (rewritten when the app moves).
