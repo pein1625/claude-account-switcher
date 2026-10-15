@@ -219,7 +219,7 @@ final class AppModel: ObservableObject {
         let p = p?.isDefault == true ? nil : p
         store.setPrefs(name, p)
         prefs = store.readPrefs()
-        store.log("prefs \(name): \(p.map { "5h \($0.hopAt.map { "\(Int($0))" } ?? "-") 7d \($0.sevenDayAt.map { "\(Int($0))" } ?? "-") off \($0.isOff)" } ?? "default")")
+        store.log("prefs \(name): \(p.map { "5h \($0.hopAt.map { "\(Int($0))" } ?? "-") 7d \($0.sevenDayAt.map { "\(Int($0))" } ?? "-") off \($0.isOff) reserve \($0.isReserve)" } ?? "default")")
         evaluate()
     }
 

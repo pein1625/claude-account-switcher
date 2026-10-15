@@ -293,6 +293,10 @@ struct AccountRow: View {
                     Text("TẮT").font(.caption2.weight(.bold)).foregroundStyle(.orange)
                         .help("Vẫn giữ login, nhưng auto-hop không bao giờ chọn account này và sẽ rời nó nếu đang live.")
                 }
+                if prefs.isReserve {
+                    Text("DỰ PHÒNG").font(.caption2.weight(.bold)).foregroundStyle(.blue)
+                        .help("Auto-hop chỉ dùng khi mọi account chính đã hết quota, và quay về account chính ngay khi có lại.")
+                }
                 Text("\(profile.email) · \(profile.plan) · \(profile.org)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 if issue != nil {
@@ -306,6 +310,10 @@ struct AccountRow: View {
                     Button("Đăng nhập lại…") { Task { await model.relogin(profile.name) } }
                     Button(prefs.isOff ? "Bật lại cho auto-hop" : "Tắt (giữ login, auto-hop bỏ qua)") {
                         var p = prefs; p.disabled = prefs.isOff ? nil : true
+                        model.setPrefs(profile.name, p)
+                    }
+                    Button(prefs.isReserve ? "Đặt làm account chính" : "Đặt làm dự phòng") {
+                        var p = prefs; p.reserve = prefs.isReserve ? nil : true
                         model.setPrefs(profile.name, p)
                     }
                     Button("Ngưỡng hop riêng…") { editingLimits = true; renaming = false; confirmingRemove = false }

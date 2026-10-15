@@ -194,13 +194,17 @@ public struct AccountPrefs: Codable, Equatable {
     public var hopAt: Double?
     public var sevenDayAt: Double?
     public var disabled: Bool?
+    /// Used only once every non-reserve account is out (or picked by hand); auto-hop returns to a non-reserve
+    /// account as soon as one has 5h room again.
+    public var reserve: Bool?
 
-    public init(hopAt: Double? = nil, sevenDayAt: Double? = nil, disabled: Bool? = nil) {
-        self.hopAt = hopAt; self.sevenDayAt = sevenDayAt; self.disabled = disabled
+    public init(hopAt: Double? = nil, sevenDayAt: Double? = nil, disabled: Bool? = nil, reserve: Bool? = nil) {
+        self.hopAt = hopAt; self.sevenDayAt = sevenDayAt; self.disabled = disabled; self.reserve = reserve
     }
 
     public var isOff: Bool { disabled ?? false }
-    public var isDefault: Bool { hopAt == nil && sevenDayAt == nil && !isOff }
+    public var isReserve: Bool { reserve ?? false }
+    public var isDefault: Bool { hopAt == nil && sevenDayAt == nil && !isOff && !isReserve }
 }
 
 public struct RateLimitEvent: Equatable {

@@ -36,10 +36,12 @@ enum CLIMain {
                                               file it under its owner and restore the configured account
       claude-switcher remove <name>           delete a saved snapshot (live login untouched)
       claude-switcher rename <old> <new>      rename a snapshot
-      claude-switcher limit [<name> [5h=N|5h=-] [7d=N|7d=-] [off|on|reset]]
+      claude-switcher limit [<name> [5h=N|5h=-] [7d=N|7d=-] [off|on|reserve|primary|reset]]
                                               per-account auto-hop limits: leave <name> at 5h ≥ N / treat it as
                                               used up at 7d ≥ N ('-' = global setting); off keeps the login but
-                                              takes it out of auto-hop; no args lists every override
+                                              takes it out of auto-hop; reserve = only used once every primary
+                                              account is out, left again as soon as one has room; no args lists
+                                              every override
       claude-switcher names                   bare names, for shell completion
       claude-switcher next                    account a hop would go to now (usable snapshots only); exit 1 when none
       claude-switcher status [--no-api]       accounts, usage, decision, running sessions
@@ -59,7 +61,7 @@ enum CLIMain {
         func describe(_ name: String, _ p: AccountPrefs?) -> String {
             let five = p?.hopAt.map { "\(Int($0))%" } ?? "\(Int(AppSettings.hopAt))% (global)"
             let seven = p?.sevenDayAt.map { "\(Int($0))%" } ?? "\(Int(AppSettings.sevenDayAt))% (global)"
-            return "\(name)\t5h \(five)\t7d \(seven)\t\(p?.isOff == true ? "off" : "on")"
+            return "\(name)\t5h \(five)\t7d \(seven)\t\(p?.isOff == true ? "off" : "on")\t\(p?.isReserve == true ? "reserve" : "primary")"
         }
         let names = switcher.profiles().map(\.name)
         guard let name = args.first else {
@@ -83,10 +85,12 @@ enum CLIMain {
             case (_, "off"): p.disabled = true
             case (_, "on"): p.disabled = nil
             case (_, "reset"): p = AccountPrefs()
+            case (_, "reserve"): p.reserve = true
+            case (_, "primary"): p.reserve = nil
             case ("5h", _): guard let v = pct() else { fallthrough }; p.hopAt = v
             case ("7d", _): guard let v = pct() else { fallthrough }; p.sevenDayAt = v
             default:
-                FileHandle.standardError.write(Data("claude-switcher: bad argument '\(arg)' (5h=1..100, 7d=1..100, '-' = global, off, on, reset)\n".utf8))
+                FileHandle.standardError.write(Data("claude-switcher: bad argument '\(arg)' (5h=1..100, 7d=1..100, '-' = global, off, on, reserve, primary, reset)\n".utf8))
                 return 1
             }
         }

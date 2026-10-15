@@ -48,6 +48,7 @@ public struct Effective: Equatable {
     public var hopAt: Double? = nil
     public var sevenDayAt: Double? = nil
     public var disabled = false
+    public var reserve = false
 }
 
 public enum Decision: Equatable {
@@ -66,7 +67,7 @@ public enum HopPolicy {
     /// account's token expires after a few hours while its 7d still decides where to go.
     public static func effective(_ s: AccountState, now: Date, maxAge: TimeInterval) -> Effective {
         var e = measured(s, now: now, maxAge: maxAge)
-        e.hopAt = s.prefs.hopAt; e.sevenDayAt = s.prefs.sevenDayAt; e.disabled = s.prefs.isOff
+        e.hopAt = s.prefs.hopAt; e.sevenDayAt = s.prefs.sevenDayAt; e.disabled = s.prefs.isOff; e.reserve = s.prefs.isReserve
         return e
     }
 
@@ -127,7 +128,7 @@ public enum HopPolicy {
         return a.hours + 1 <= b.hours
     }
 
-    /// Candidates ordered best-first. `prefer7d`: accounts with 5h room first, then quota about to expire
+    /// Candidates ordered best-first, non-reserve accounts before reserve ones. `prefer7d`: accounts with 5h room first, then quota about to expire
     /// (earliest reset first), then furthest behind their weekly pace, then lowest 5h. Otherwise lowest 5h, then
     /// lowest 7d. Name breaks ties.
     public static func ranked(_ states: [AccountState], excluding live: String?, t: Thresholds, now: Date, maxAge: TimeInterval) -> [Effective] {
@@ -136,6 +137,7 @@ public enum HopPolicy {
             .filter { !isExhausted($0, t) }
             .sorted { a, b in
                 let (a7, b7) = (a.sevenDay ?? 0, b.sevenDay ?? 0)
+                if a.reserve != b.reserve { return !a.reserve }
                 if t.prefer7d {
                     let (ra, rb) = (hasRoom(a, t), hasRoom(b, t))
                     if ra != rb { return ra }
@@ -183,6 +185,15 @@ public enum HopPolicy {
         }
         guard isExhausted(liveEff, t) else {
             let stay = Decision.stay(String(format: "%@ 5h %.0f%% < %.0f%%", live, liveEff.fiveHour, hopAt(liveEff, t)))
+            if liveEff.reserve, let primary = candidates.first(where: { !$0.reserve && hasRoom($0, t) }) {
+                let why = "\(live) là dự phòng, \(primary.name) còn quota"
+                if let m = lastManualSwitchAt, now.timeIntervalSince(m) < manualHold {
+                    return .hold("giữ account chọn tay thêm \(Int((manualHold - now.timeIntervalSince(m)) / 60) + 1) phút, rồi về \(primary.name)")
+                }
+                return waiting() ?? .hop(to: primary.name, reason: why)
+            }
+            // a non-reserve live account never balances onto a reserve one
+            let candidates = liveEff.reserve ? candidates : candidates.filter { !$0.reserve }
             guard t.prefer7d else { return stay }
             // use it or lose it: quota the reset is about to throw away beats the weekly pace
             let liveX = expiring(liveEff, t, now: now)

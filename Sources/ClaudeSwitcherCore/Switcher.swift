@@ -468,7 +468,7 @@ public struct Switcher {
             let e = HopPolicy.effective(state, now: now, maxAge: 300)
             let q = e.source == .none ? "-" : "\(Int(e.fiveHour.rounded()))%"
             let saved = (p.saved_at ?? "-").split(separator: "T").first.map(String.init) ?? "-"
-            let off = state.prefs.isOff ? "  (off)" : ""
+            let off = (state.prefs.isOff ? "  (off)" : "") + (state.prefs.isReserve ? "  (reserve)" : "")
             out += String(format: "%-1@ %-14@ %-32@ %-22@ %-8@ %-6@ %@\n", p.name == live ? "*" : " ", p.name, p.email, p.org, p.plan, q, saved + off)
         }
         return out

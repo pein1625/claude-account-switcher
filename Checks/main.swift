@@ -226,6 +226,22 @@ do {
     equal(HopPolicy.decide(live: "m04", states: Array(liveOff.prefix(1)) + [AccountState(name: "m19", usage: api(1), prefs: AccountPrefs(disabled: true))], t: t, now: now),
           .stay("m04 5h 10% < 90%"), "everything off -> stays where it is")
     check(AccountPrefs(hopAt: nil, sevenDayAt: nil, disabled: nil).isDefault && !AccountPrefs(disabled: true).isDefault, "default prefs")
+    check(!AccountPrefs(reserve: true).isDefault, "reserve is not default")
+
+    // reserve tier: m04/m19 primary, hapk reserve
+    let res = AccountPrefs(reserve: true)
+    let t7r = Thresholds(hopAt: 90, sevenDayAt: 100, prefer7d: true, sevenDayMargin: 10)
+    equal(HopPolicy.ranked([AccountState(name: "m04", usage: api(95)), AccountState(name: "m19", usage: api(60)), AccountState(name: "hapk", usage: api(0), prefs: res)],
+                           excluding: "m04", t: t, now: now, maxAge: 300).map(\.name), ["m19", "hapk"], "primary before reserve even with higher 5h")
+    let primOut = [AccountState(name: "m04", usage: api(95)), AccountState(name: "m19", usage: api(92)), AccountState(name: "hapk", usage: api(0), prefs: res)]
+    equal(HopPolicy.decide(live: "m04", states: primOut, t: t, now: now), .hop(to: "hapk", reason: "m04 5h 95% ≥ 90%"), "reserve used once primaries are out")
+    let week7 = [AccountState(name: "m04", usage: api(24, 98)), AccountState(name: "m19", usage: api(88, 60)), AccountState(name: "hapk", usage: api(0, 5), prefs: res)]
+    if case .stay = HopPolicy.decide(live: "m04", states: week7, t: t7r, now: now) {} else { check(false, "primary never balances onto a reserve") }
+    let back = [AccountState(name: "hapk", usage: api(10), prefs: res), AccountState(name: "m19", usage: api(30))]
+    equal(HopPolicy.decide(live: "hapk", states: back, t: t, now: now), .hop(to: "m19", reason: "hapk là dự phòng, m19 còn quota"), "back to primary with room")
+    if case .hold = HopPolicy.decide(live: "hapk", states: back, t: t, now: now, lastManualSwitchAt: now.addingTimeInterval(-60)) {} else { check(false, "manual pick of a reserve holds") }
+    let tightBack = [AccountState(name: "hapk", usage: api(10), prefs: res), AccountState(name: "m19", usage: api(85))]
+    if case .stay = HopPolicy.decide(live: "hapk", states: tightBack, t: t, now: now) {} else { check(false, "primary without 5h room: stay on reserve") }
 
     let block = ShellInstaller.rcBlock()
     check(block.hasPrefix(ShellInstaller.markBegin + "\n") && block.hasSuffix(ShellInstaller.markEnd), "rc block delimited by the plugin's markers")
