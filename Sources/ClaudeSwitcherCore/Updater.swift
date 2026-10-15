@@ -86,9 +86,10 @@ public enum Updater {
     }
 
     /// Starts the installer and returns without waiting: the script stops this very app before copying the new
-    /// bundle, so nothing here survives to report the result - the log file is the record.
+    /// bundle, so nothing here survives to report a success - the log file is the record. `onExit` runs only when the
+    /// installer ends while this process is still alive, which means it failed before replacing the app.
     @discardableResult
-    public static func startUpgrade(dest: String, version: String?, log: URL) throws -> Int32 {
+    public static func startUpgrade(dest: String, version: String?, log: URL, onExit: (@Sendable (Int32) -> Void)? = nil) throws -> Int32 {
         Paths.ensureSwitcherDir()
         let cmd = "{ echo \"--- \(ISO8601.string(Date())) update \(AppInfo.version) -> \(version ?? "latest")\"; "
             + upgradeCommand(dest: dest, version: version)
@@ -101,8 +102,16 @@ public enum Updater {
         p.environment = env
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
+        if let onExit { p.terminationHandler = { onExit($0.terminationStatus) } }
         do { try p.run() } catch { throw ShellError("cannot start the installer: \(error.localizedDescription)") }
         return p.processIdentifier
+    }
+
+    /// The last line the installer wrote before the `--- exit` marker: what to show when an upgrade fails.
+    public static func lastLogLine(_ log: URL) -> String? {
+        guard let text = try? String(contentsOf: log, encoding: .utf8) else { return nil }
+        return text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty && !$0.hasPrefix("---") }
     }
 
     private static func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

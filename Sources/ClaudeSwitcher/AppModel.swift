@@ -616,7 +616,9 @@ final class AppModel: ObservableObject {
         }
         let dest = Bundle.main.bundleURL.deletingLastPathComponent().path
         do {
-            let pid = try Updater.startUpgrade(dest: dest, version: version, log: Paths.updateLog)
+            let pid = try Updater.startUpgrade(dest: dest, version: version, log: Paths.updateLog) { status in
+                Task { @MainActor [weak self] in self?.upgradeEnded(status) }
+            }
             update = .installing(version)
             store.log("update to \(version) started (pid \(pid), dest \(dest), log \(Paths.updateLog.path))")
             Notifier.post("Đang cài Claude Switcher \(version)", "App sẽ tự thoát rồi mở lại. Log: \(Paths.updateLog.path)")
@@ -624,6 +626,15 @@ final class AppModel: ObservableObject {
             update = .failed(error.localizedDescription)
             store.log("update failed to start: \(error.localizedDescription)")
         }
+    }
+
+    /// The installer stops this app before it replaces the bundle, so reaching here means it failed first.
+    private func upgradeEnded(_ status: Int32) {
+        guard case .installing(let version) = update else { return }
+        let why = Updater.lastLogLine(Paths.updateLog) ?? "exit \(status)"
+        update = .failed("cài \(version) lỗi: \(why)")
+        store.log("update to \(version) ended without restarting the app (exit \(status)): \(why)")
+        Notifier.post("Cài Claude Switcher \(version) lỗi", "\(why). Log: \(Paths.updateLog.path)")
     }
 
     func dismissUpdateNotice() {
