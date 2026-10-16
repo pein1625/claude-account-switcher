@@ -56,6 +56,11 @@ final class AppModel: ObservableObject {
 
     private var forcedExhausted: [String: Date] = [:]
     private var forcedAt: [String: Date] = [:]
+    /// Sessions a rate limit stopped, keyed by pid: Claude Code holds them idle until the account's reset
+    /// ("continuing automatically at …"), so no Stop hook fires to restart them once a plan exists.
+    private var limitWaiting: [Int32: (at: Date, until: Date, sessionID: String?)] = [:]
+    /// Last restart onto the live account for a limit the live account's own API reading does not show.
+    private var misattributedRestartAt: [String: Date] = [:]
     private var lastHopAt: Date?
     private var lastSwitchAt: Date?
     /// The user chose the live account (menu, terminal `use` that held, /login): the 7d balance waits an hour.
@@ -237,6 +242,7 @@ final class AppModel: ObservableObject {
         refreshSetup()
         evaluate()
         planOrphans(now: now)
+        restartLimitWaiting(now: now)
         if let n = liveName { lastKnownLiveName = n } else { await autoSaveNewLogin(now: now) }
     }
 
@@ -380,6 +386,19 @@ final class AppModel: ObservableObject {
             let reset = usage[name]?.fiveHour?.resetsAt.flatMap { $0 > now ? $0 : nil }
                 ?? records[name]?.resetsAt.flatMap { $0 > now ? $0 : nil }
                 ?? now.addingTimeInterval(5 * 3600)
+            limitWaiting[e.pid] = (at: e.at, until: reset, sessionID: e.sessionID)
+            // Blamed on the live account while its fresh API reading has room: the session still runs on an older
+            // token. Flagging live would hop away from a healthy account and leave the session waiting for reset.
+            // A second such limit within 15 min means live itself is limited after all: flag it as usual.
+            if let live = liveName, name == live, let liveEff = effective(live, now: now), liveEff.source == .api,
+               !HopPolicy.isExhausted(liveEff, AppSettings.thresholds),
+               misattributedRestartAt[live].map({ now.timeIntervalSince($0) >= 900 }) ?? true,
+               let s = sessions.first(where: { $0.pid == e.pid }), s.isLoop, AppSettings.restartSessions {
+                store.log("rate_limit event pid \(e.pid) on \(live) but API shows 5h \(Int(liveEff.fiveHour))%: session runs on another token")
+                misattributedRestartAt[live] = now
+                planRestarts(for: [s], to: live)
+                continue
+            }
             forcedExhausted[name] = reset
             forcedAt[name] = now
             store.writeQuotaRecord(name, QuotaRecord(pct: 100, resetsAt: reset, recordedAt: now), now: now)
@@ -391,6 +410,26 @@ final class AppModel: ObservableObject {
                let s = sessions.first(where: { $0.pid == e.pid }), s.isLoop, AppSettings.restartSessions {
                 planRestarts(for: [s], to: live)
             }
+        }
+    }
+
+    /// A rate-limited session the hook could not restart (no plan within its wait - e.g. the hop came later)
+    /// sits idle until its account resets. Once the plan moves it to the live account, restart it now: the
+    /// turn is already over, so nothing is cut. A pid still alive after the hook's wait was not restarted by it.
+    private func restartLimitWaiting(now: Date) {
+        limitWaiting = limitWaiting.filter { $0.value.until > now && kill($0.key, 0) == 0 }
+        guard AppSettings.restartSessions, let live = liveName, let p = plan else { return }
+        for (pid, w) in limitWaiting where now.timeIntervalSince(w.at) > 8 && p.pids[String(pid)] == live {
+            guard let s = sessions.first(where: { $0.pid == pid }), s.isLoop else { continue }
+            limitWaiting.removeValue(forKey: pid)
+            if let id = s.loopID {
+                store.writeHopMarker(id: id, live, sessionID: w.sessionID, prompt: HookRunner.resumePrompt)
+            } else {
+                store.writeHop(live)
+            }
+            _ = kill(pid, SIGTERM)
+            store.appendRestartLog("\(ISO8601.string(now))\tlimit-wait\thop=\(live)\tpid=\(pid)")
+            store.log("restarted pid \(pid) waiting for its limit reset -> \(live)")
         }
     }
 

@@ -393,6 +393,10 @@ do {
     setenv("CLAUDE_ACCOUNT_DIR", dir.path, 1)
     defer { unsetenv("CLAUDE_ACCOUNT_DIR"); try? FileManager.default.removeItem(at: dir) }
     let store = AccountStore()
+    store.appendEvent(RateLimitEvent(at: Date(timeIntervalSince1970: 1_800_000_000), pid: 42, sessionID: "sess-r"))
+    store.appendEvent(RateLimitEvent(at: Date(timeIntervalSince1970: 1_800_000_001), pid: 43))
+    equal(store.readEvents(from: 0).events, [RateLimitEvent(at: Date(timeIntervalSince1970: 1_800_000_000), pid: 42, sessionID: "sess-r"),
+                                             RateLimitEvent(at: Date(timeIntervalSince1970: 1_800_000_001), pid: 43)], "event keeps its session id")
     store.writeHopMarker(id: "1-2", "m19", sessionID: "sess-a")
     equal(try? String(contentsOf: Paths.hopMarker("1-2"), encoding: .utf8), "m19\n", "marker stays a bare name (pre-0.5 loops read it)")
     equal(try? String(contentsOf: Paths.hopSessionMarker("1-2"), encoding: .utf8), "sess-a\n")

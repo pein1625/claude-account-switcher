@@ -14,7 +14,7 @@ enum HookRunner {
         guard let pid = resolveClaudePid(env: env) else { return 0 }
 
         if event == "StopFailure" {
-            store.appendEvent(RateLimitEvent(at: now, pid: pid))
+            store.appendEvent(RateLimitEvent(at: now, pid: pid, sessionID: json["session_id"] as? String))
             if store.appAlive(now: now) {
                 var tries = 0
                 while tries < 10, store.readRestartPlan()?.pids[String(pid)] == nil {

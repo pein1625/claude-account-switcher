@@ -210,11 +210,12 @@ public struct AccountPrefs: Codable, Equatable {
 public struct RateLimitEvent: Equatable {
     public var at: Date
     public var pid: Int32
-    public init(at: Date, pid: Int32) { self.at = at; self.pid = pid }
+    public var sessionID: String?
+    public init(at: Date, pid: Int32, sessionID: String? = nil) { self.at = at; self.pid = pid; self.sessionID = sessionID }
 }
 
 public enum AppInfo {
-    public static let version = "0.7.2"
+    public static let version = "0.7.3"
     public static let bundleID = "com.hapk.claude-switcher"
     public static let name = "Claude Switcher"
 }

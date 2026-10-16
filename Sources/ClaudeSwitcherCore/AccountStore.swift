@@ -175,7 +175,7 @@ public final class AccountStore {
 
     public func appendEvent(_ e: RateLimitEvent) {
         Paths.ensureSwitcherDir()
-        append(Paths.eventsLog, "\(Int(e.at.timeIntervalSince1970))\trate_limit\t\(e.pid)\n")
+        append(Paths.eventsLog, "\(Int(e.at.timeIntervalSince1970))\trate_limit\t\(e.pid)\t\(e.sessionID ?? "")\n")
     }
 
     public func appendRestartLog(_ line: String) {
@@ -292,7 +292,8 @@ public final class AccountStore {
         for line in text.split(separator: "\n") {
             let p = line.split(separator: "\t")
             guard p.count >= 3, let ts = TimeInterval(p[0]), p[1] == "rate_limit", let pid = Int32(p[2]) else { continue }
-            events.append(RateLimitEvent(at: Date(timeIntervalSince1970: ts), pid: pid))
+            let sid = p.count >= 4 ? String(p[3]) : ""
+            events.append(RateLimitEvent(at: Date(timeIntervalSince1970: ts), pid: pid, sessionID: sid.isEmpty ? nil : sid))
         }
         return (events, size)
     }
