@@ -17,6 +17,8 @@ public enum Paths {
     public static var settingsJSON: URL { home.appendingPathComponent(".claude/settings.json") }
     public static var currentMarker: URL { accountsDir.appendingPathComponent(".current") }
     public static var hopFile: URL { accountsDir.appendingPathComponent(".hop") }
+    /// First message for the session a `.hop` relaunches (any `claude-as` loop, the plugin's included).
+    public static var hopPromptFile: URL { accountsDir.appendingPathComponent(".hop.prompt") }
 
     public static var switcherDir: URL { accountsDir.appendingPathComponent(".switcher") }
     public static var aliveFile: URL { switcherDir.appendingPathComponent("alive") }

@@ -144,8 +144,14 @@ public final class AccountStore {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
     }
-    public func writeHop(_ name: String) { writePrivate(Paths.hopFile, name + "\n") }
-    public func removeHop() { try? FileManager.default.removeItem(at: Paths.hopFile) }
+    public func writeHop(_ name: String, prompt: String? = nil) {
+        if let prompt, !prompt.isEmpty { writePrivate(Paths.hopPromptFile, prompt + "\n") }
+        writePrivate(Paths.hopFile, name + "\n")
+    }
+    public func removeHop() {
+        try? FileManager.default.removeItem(at: Paths.hopFile)
+        try? FileManager.default.removeItem(at: Paths.hopPromptFile)
+    }
 
     /// Per-loop relaunch target for this app's `claude-as` (`.switcher/hop-<CLAUDE_AS_ID>`).
     /// `prompt` is sent as the resumed session's first message, for a turn the hop cut off mid-work.

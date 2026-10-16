@@ -215,7 +215,7 @@ public struct RateLimitEvent: Equatable {
 }
 
 public enum AppInfo {
-    public static let version = "0.7.3"
+    public static let version = "0.7.4"
     public static let bundleID = "com.hapk.claude-switcher"
     public static let name = "Claude Switcher"
 }

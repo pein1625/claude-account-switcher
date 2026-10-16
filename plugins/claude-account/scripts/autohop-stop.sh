@@ -59,4 +59,8 @@ cmd=$(ps -o command= -p "$pid" 2>/dev/null) || exit 0
 printf '%s\t%s\thop=%s\tpid=%s\tvia=%s\t%s\n' "$(date +%FT%T)" "$event" "$(cat "$dir/.hop")" "$pid" \
   "$([ "$pid" = "${CLAUDE_PID:-}" ] && echo env || echo walk)" "$cmd" >> "$dir/.autohop.log"
 [ -n "${CLAUDE_ACCOUNT_AUTOHOP_DRY_RUN:-}" ] && exit 0
+# a rate-limited turn stopped mid-work; without a first message the resumed session sits idle at the prompt
+if [ "$event" = StopFailure ]; then
+  printf '%s\n' "[claude-account] This session hit the usage limit and was restarted on another account. Continue the task from where it stopped. Background shells, subagents and monitors that were running before the restart were killed and their results are lost - start again any that are still needed." > "$dir/.hop.prompt"
+fi
 kill -TERM "$pid"

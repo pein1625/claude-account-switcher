@@ -425,7 +425,7 @@ final class AppModel: ObservableObject {
             if let id = s.loopID {
                 store.writeHopMarker(id: id, live, sessionID: w.sessionID, prompt: HookRunner.resumePrompt)
             } else {
-                store.writeHop(live)
+                store.writeHop(live, prompt: HookRunner.resumePrompt)
             }
             _ = kill(pid, SIGTERM)
             store.appendRestartLog("\(ISO8601.string(now))\tlimit-wait\thop=\(live)\tpid=\(pid)")

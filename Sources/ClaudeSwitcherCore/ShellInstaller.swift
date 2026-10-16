@@ -119,6 +119,8 @@ public enum ShellInstaller {
               rm -f "$sw/hop-$id.session" "$sw/hop-$id.prompt"
             elif [ -s "$dir/.hop" ]; then
               next=$(cat "$dir/.hop"); rm -f "$dir/.hop"
+              [ -s "$dir/.hop.prompt" ] && msg=$(cat "$dir/.hop.prompt")
+              rm -f "$dir/.hop.prompt"
             else
               return $rc
             fi

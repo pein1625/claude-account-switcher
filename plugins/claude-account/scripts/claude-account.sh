@@ -342,7 +342,7 @@ cmd_use() {
   fi
 
   warn_if_refresh_expired "$target_blob" "$name"
-  rm -f "$HOP_FILE"
+  rm -f "$HOP_FILE" "$HOP_FILE.prompt"
   write_live_blob "$target_blob"
   patch_config_profile "$target_profile"
   set_current_marker "$name" "$(json_get "$target_profile" '.accountUuid // empty')"
@@ -457,10 +457,10 @@ cmd_quota() {
       ( umask 077; printf '%s\n' "$next" > "$HOP_FILE" )
       printf '%s\n' "$next"
     else
-      rm -f "$HOP_FILE"
+      rm -f "$HOP_FILE" "$HOP_FILE.prompt"
     fi
   else
-    rm -f "$HOP_FILE"
+    rm -f "$HOP_FILE" "$HOP_FILE.prompt"
   fi
 }
 

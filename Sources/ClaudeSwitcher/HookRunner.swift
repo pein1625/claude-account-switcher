@@ -45,7 +45,7 @@ enum HookRunner {
             store.writeHopMarker(id: id, target, sessionID: json["session_id"] as? String,
                                  prompt: event == "StopFailure" ? resumePrompt : nil)
         } else {
-            store.writeHop(target)
+            store.writeHop(target, prompt: event == "StopFailure" ? resumePrompt : nil)
         }
         store.appendRestartLog("\(ISO8601.string(now))\t\(event)\thop=\(target)\tpid=\(pid)")
         if env["CLAUDE_SWITCHER_DRY_RUN"] != nil { return 0 }

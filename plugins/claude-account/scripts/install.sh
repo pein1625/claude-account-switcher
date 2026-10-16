@@ -95,7 +95,7 @@ cat >> "$RC" <<'RC_EOF'
 #   Start claude (optionally after switching to <account>). When the statusline flags the 5h
 #   quota (accounts/.hop), the next exit switches to the flagged account and resumes the
 #   conversation with --continue and the launch options it was started with. CLAUDE_ACCOUNT_AUTOHOP=1 makes
-#   that exit automatic.
+#   that exit automatic. A turn the usage limit cut off resumes with a message telling it to go on.
 # Launch options to carry onto `claude --resume`: everything except what picks the conversation (-c, -r,
 # --session-id, --fork-session, --from-pr, --teleport) and the opening prompt, which was already sent.
 # Values are consumed the way claude parses them: <x> takes one, [x] one unless it starts with -, <x...> until the next flag.
@@ -129,7 +129,7 @@ _claude_as_keep() {
   done
 }
 claude-as() {
-  local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" next rc keep
+  local dir="${CLAUDE_ACCOUNT_DIR:-$HOME/.claude/accounts}" next rc keep msg
   if [ -n "${1:-}" ] && [ -f "$dir/$1.json" ]; then
     claude-account use "$1" || return $?
     shift
@@ -143,6 +143,8 @@ claude-as() {
     rc=$?
     [ -s "$dir/.hop" ] || return $rc
     next=$(cat "$dir/.hop"); rm -f "$dir/.hop"
+    msg=""; [ -s "$dir/.hop.prompt" ] && msg=$(cat "$dir/.hop.prompt")
+    rm -f "$dir/.hop.prompt"
     # a failed switch must not end the session: resume on whatever login is live
     if claude-account use "$next"; then
       printf 'claude-as: resuming as %s\n' "$next"
@@ -150,6 +152,8 @@ claude-as() {
       printf 'claude-as: switch to %s failed - resuming on the current login\n' "$next" >&2
     fi
     set -- "${keep[@]}" --continue
+    # a turn cut off by the usage limit gets a first message, so the work goes on instead of idling
+    [ -n "$msg" ] && set -- "$@" "$msg"
   done
 }
 if [ -n "${ZSH_VERSION:-}" ]; then
