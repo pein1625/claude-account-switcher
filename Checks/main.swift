@@ -358,6 +358,11 @@ do {
 
     func prof(_ n: String, _ uuid: String) -> AccountProfile { AccountProfile(name: n, oauthAccount: OAuthAccount(accountUuid: uuid, emailAddress: "\(n)@x.io")) }
     let ps = [prof("m04", "u4"), prof("m19", "u19")]
+    let carried = Keychain.carryingMachineState(login: #"{"claudeAiOauth":{"accessToken":"new"},"mcpOAuth":{"jira":"stale"}}"#,
+                                                live: #"{"claudeAiOauth":{"accessToken":"old"},"mcpOAuth":{"jira":"fresh"}}"#)
+    let carriedRoot = (try? JSONSerialization.jsonObject(with: Data(carried.utf8))) as? [String: [String: String]]
+    check(carriedRoot?["claudeAiOauth"]?["accessToken"] == "new" && carriedRoot?["mcpOAuth"]?["jira"] == "fresh", "switch takes the login, keeps the live MCP tokens")
+    check(Keychain.carryingMachineState(login: "L", live: nil) == "L" && Keychain.carryingMachineState(login: "L", live: "{}") == "L", "unparsable -> login unchanged")
     equal(Switcher.snapshotDecision(configName: "m19", owner: .confirmed(uuid: "u19", email: nil), profiles: ps, trustConfig: false), .save("m19"))
     equal(Switcher.snapshotDecision(configName: "m19", owner: .confirmed(uuid: "u4", email: nil), profiles: ps, trustConfig: true), .save("m04"),
           "drift: the live token goes to its real owner, never to the account the config names (the 2026-09-25 loss)")

@@ -118,7 +118,26 @@ public enum Keychain {
     public static func readLive() async -> OAuthBlob? { await read(service: liveService) }
     public static func readSaved(_ name: String) async -> OAuthBlob? { await read(service: savedService(name)) }
 
-    /// Copies a blob into a Keychain item (create or update). Used only by the drift repair.
+    /// Puts an account's login live. Only `claudeAiOauth` belongs to the account: everything else in the live
+    /// item (`mcpOAuth`, the MCP servers' OAuth tokens) belongs to this machine and is kept. Writing a snapshot
+    /// whole put its stale MCP tokens back, and their already rotated refresh tokens then failed (invalid_grant).
+    public static func writeLive(raw: String) async throws {
+        let current = try? await Shell.run("/usr/bin/security", ["find-generic-password", "-s", liveService, "-w"], timeout: 20)
+        try await write(service: liveService, raw: carryingMachineState(login: raw, live: current?.ok == true ? current?.trimmedOut : nil))
+    }
+
+    /// `login`'s `claudeAiOauth` over the rest of `live`; `login` unchanged when either does not parse.
+    public static func carryingMachineState(login: String, live: String?) -> String {
+        guard let live, let liveData = live.data(using: .utf8), let loginData = login.data(using: .utf8),
+              var merged = (try? JSONSerialization.jsonObject(with: liveData)) as? [String: Any],
+              let target = (try? JSONSerialization.jsonObject(with: loginData)) as? [String: Any],
+              let oauth = target["claudeAiOauth"] else { return login }
+        merged["claudeAiOauth"] = oauth
+        guard let out = try? JSONSerialization.data(withJSONObject: merged), let s = String(data: out, encoding: .utf8) else { return login }
+        return s
+    }
+
+    /// Copies a blob into a Keychain item (create or update).
     public static func write(service: String, raw: String) async throws {
         let r = try await Shell.run("/usr/bin/security",
                                     ["add-generic-password", "-U", "-a", NSUserName(), "-s", service, "-w", raw], timeout: 20)

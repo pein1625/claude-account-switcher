@@ -255,7 +255,7 @@ public struct Switcher {
                 note += "\nwarning: refresh token for '\(name)' expired on \(f.string(from: exp)). If Claude asks you to log in, run `claude-switcher relogin \(name)`."
             }
             store.removeHop()
-            try await Keychain.write(service: Keychain.liveService, raw: targetBlob.raw)
+            try await Keychain.writeLive(raw: targetBlob.raw)
             try store.patchClaudeJSON(oauthAccount: targetProfile)
             store.setCurrentMarker(name: name, uuid: target.uuid ?? "")
             return "Switched to '\(name)'  (\(target.email), \(target.org))" + note
@@ -299,7 +299,7 @@ public struct Switcher {
             if let bad = Switcher.targetProblem(owner: await tokenOwner(target), expectedUuid: cfgUuid, profiles: profiles) {
                 throw SwitcherError("\(saved)but the snapshot of '\(cfgName)' \(bad.detail) - log in again: claude-switcher relogin \(cfgName)")
             }
-            try await Keychain.write(service: Keychain.liveService, raw: target.raw)
+            try await Keychain.writeLive(raw: target.raw)
             return "Realigned: \(saved)'\(cfgName)' restored to the live login"
         }
     }
@@ -432,13 +432,13 @@ public struct Switcher {
             var note = ""
             // a relogin of the account that is live: its dead live token gets the new one too
             if relogin, service != Keychain.liveService, currentName() == name {
-                try await Keychain.write(service: Keychain.liveService, raw: blob.raw)
+                try await Keychain.writeLive(raw: blob.raw)
                 note = "\nthe live login ('\(name)') now uses the new tokens as well"
             }
             if service == Keychain.liveService {
                 if let prev = ctx.liveBeforeName, let prevBlob = await Keychain.readSaved(prev),
                    let prevProfile = store.profileRaw(prev)?["oauthAccount"] as? [String: Any] {
-                    try await Keychain.write(service: Keychain.liveService, raw: prevBlob.raw)
+                    try await Keychain.writeLive(raw: prevBlob.raw)
                     try store.patchClaudeJSON(oauthAccount: prevProfile)
                     note = "\nwarning: claude wrote into the live store despite CLAUDE_CONFIG_DIR - restored the previous login (\(prev))"
                 } else {
